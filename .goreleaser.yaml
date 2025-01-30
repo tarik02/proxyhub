@@ -48,6 +48,7 @@ archives:
         formats: zip
 
 changelog:
+  disable: '{{ envOrDefault "IS_SNAPSHOT" "false" }}'
   sort: asc
   filters:
     exclude:
@@ -55,6 +56,7 @@ changelog:
       - "^test:"
 
 release:
+  disable: '{{ envOrDefault "IS_SNAPSHOT" "false" }}'
   footer: >-
 
     ---
@@ -65,15 +67,25 @@ kos:
   - id: proxyhub
     build: proxyhub
     repositories:
-      - ghcr.io/tarik02/proxyhub
+      - ghcr.io/tarik02/proxyhub/proxyhub
+    tags:
+      - '{{ .Version }}'
+      - '{{ if eq .Branch "next" }}next{{end}}'
+      - '{{ if not .Prerelease }}stable{{end}}'
     platforms:
       - linux/amd64
       - linux/arm64
+    bare: true
 
   - id: proxynode
     build: proxynode
     repositories:
-      - ghcr.io/tarik02/proxyhub
+      - ghcr.io/tarik02/proxyhub/proxynode
+    tags:
+      - '{{ .Version }}'
+      - '{{ if eq .Branch "next" }}next{{end}}'
+      - '{{ if not .Prerelease }}stable{{end}}'
     platforms:
       - linux/amd64
       - linux/arm64
+    bare: true
