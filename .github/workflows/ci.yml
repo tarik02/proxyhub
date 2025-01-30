@@ -108,8 +108,8 @@ jobs:
         run: |
           goreleaser release --clean
         env:
-          GORELEASER_CURRENT_TAG: ${{ needs.get-version.outputs.snapshot_version }}
-          GORELEASER_PREVIOUS_TAG: ${{ needs.get-version.outputs.last_version }}
+          GORELEASER_CURRENT_TAG: v${{ needs.get-version.outputs.snapshot_version }}
+          GORELEASER_PREVIOUS_TAG: v${{ needs.get-version.outputs.last_version }}
           IS_SNAPSHOT: "true"
 
   release:
