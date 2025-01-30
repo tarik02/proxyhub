@@ -3,7 +3,7 @@ module github.com/tarik02/proxyhub
 go 1.23.4
 
 require (
-	github.com/fsnotify/fsnotify v1.7.0
+	github.com/fsnotify/fsnotify v1.8.0
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/viper v1.19.0
 	github.com/thessem/zap-prettyconsole v0.5.2
