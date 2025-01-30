@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tarik02/proxyhub/logging"
 	"github.com/tarik02/proxyhub/protocol"
+	"github.com/tarik02/proxyhub/util"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -28,17 +29,15 @@ type Proxy struct {
 
 	wsConn     *websocket.Conn
 	conns      map[uint32]*RemoteConn
-	connsMutex sync.RWMutex
 	writeQueue chan []byte
 	wg         *errgroup.Group
 }
 
 func NewProxy(id string, wsConn *websocket.Conn) *Proxy {
 	return &Proxy{
-		id:         id,
-		wsConn:     wsConn,
-		conns:      make(map[uint32]*RemoteConn),
-		writeQueue: make(chan []byte, 16),
+		id:     id,
+		wsConn: wsConn,
+		conns:  make(map[uint32]*RemoteConn),
 	}
 }
 
@@ -59,9 +58,6 @@ func (p *Proxy) Started() time.Time {
 }
 
 func (p *Proxy) ActiveConnectionsCount() int {
-	p.connsMutex.RLock()
-	defer p.connsMutex.RUnlock()
-
 	return len(p.conns)
 }
 
@@ -76,30 +72,108 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 		return err
 	}
 
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(context.Canceled)
+
+	p.wg, ctx = errgroup.WithContext(ctx)
+
+	connsChan := make(chan net.Conn, 16)
+	p.wg.Go(func() error {
+		return util.ListenToChan(l, connsChan)
+	})
+
+	p.wg.Go(func() error {
+		<-ctx.Done()
+
+		p.wg.Go(func() error {
+			return p.wsConn.Close()
+		})
+
+		p.wg.Go(func() error {
+			defer close(connsChan)
+
+			if err := l.Close(); err != nil {
+				log.Warn("listener close failed", zap.Error(err))
+			}
+
+			p.wg.Go(func() error {
+				for conn := range connsChan {
+					if err := conn.Close(); err != nil {
+						log.Warn("close failed", zap.Error(err))
+					}
+				}
+				return nil
+			})
+
+			return nil
+		})
+
+		return ctx.Err()
+	})
+
+	writeQueue := make(chan []byte, 16)
+	p.writeQueue = writeQueue
+	p.wg.Go(func() error {
+		return p.workerSendQueue(p.wsConn, p.writeQueue)
+	})
+
+	cmdChan := make(chan protocol.Cmd, 16)
+	p.wg.Go(func() error {
+		defer close(cmdChan)
+		return p.workerReadWS(ctx, cmdChan)
+	})
+
 	log.Info("listening", zap.String("addr", l.Addr().String()))
 	go onReady()
 
 	p.ready.Store(true)
 	p.port.Store(int32(l.Addr().(*net.TCPAddr).Port)) // nolint: gosec,forcetypeassert
 
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(context.Canceled)
+	for {
+		select {
+		case conn, ok := <-connsChan:
+			if !ok {
+				log.Debug("conns chan closed")
+				connsChan = nil
+				cancel(context.Canceled)
+				break
+			}
+			p.handleConn(ctx, conn)
 
-	p.wg, ctx = errgroup.WithContext(ctx)
+		case cmd, ok := <-cmdChan:
+			if !ok {
+				log.Debug("cmd chan closed")
+				cmdChan = nil
+				cancel(context.Canceled)
+				break
+			}
+			switch cmd := cmd.(type) {
+			case protocol.CmdData:
+				conn, ok := p.conns[cmd.ID]
+				if !ok {
+					log.Warn("connection not found", zap.Uint32("conn_id", cmd.ID))
+					continue
+				}
 
-	p.wg.Go(func() error {
-		return p.acceptConns(ctx, l)
-	})
+				conn.NotifyWrite(cmd.Bytes)
 
-	p.wg.Go(func() error {
-		return p.workerSendQueue(ctx)
-	})
+			case protocol.CmdClose:
+				conn, ok := p.conns[cmd.ID]
+				if !ok {
+					log.Warn("connection not found", zap.Uint32("conn_id", cmd.ID))
+					continue
+				}
 
-	p.wg.Go(func() error {
-		return p.workerReadWS(ctx)
-	})
+				conn.NotifyClose()
+			}
+		}
 
-	<-ctx.Done()
+		if connsChan == nil && cmdChan == nil {
+			break
+		}
+	}
+
+	log.Info("closing")
 
 	p.ready.Store(false)
 
@@ -108,29 +182,12 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 	close(p.writeQueue)
 	p.mu.Unlock()
 
-	if err2 := l.Close(); err2 != nil {
-		log.Warn("listener close failed", zap.Error(err2))
-	}
-
 	err = ctx.Err()
 	if err2 := p.wg.Wait(); err2 != nil {
 		err = err2
 	}
 
 	return err
-}
-
-func (p *Proxy) acceptConns(ctx context.Context, l net.Listener) error {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return err
-		}
-		p.wg.Go(func() error {
-			p.handleConn(ctx, conn)
-			return nil
-		})
-	}
 }
 
 func (p *Proxy) QueueToWS(cmd protocol.Cmd) error {
@@ -153,62 +210,62 @@ func (p *Proxy) handleConn(ctx context.Context, conn net.Conn) {
 	id := atomic.AddUint32(&p.connCounter, 1)
 
 	rconn := NewRemoteConn(id, conn)
-	p.connsMutex.Lock()
 	p.conns[id] = rconn
-	p.connsMutex.Unlock()
 
-	log := logging.FromContext(ctx, zap.Uint32("conn_id", id))
-	log.Info("connection accepted")
+	p.wg.Go(func() error {
+		log := logging.FromContext(ctx, zap.Uint32("conn_id", id))
+		log.Info("connection accepted")
 
-	g, ctx := errgroup.WithContext(ctx)
+		g, ctx := errgroup.WithContext(ctx)
 
-	if err := p.QueueToWS(protocol.CmdNew{ID: id}); err != nil {
-		log.Warn("queue failed", zap.Error(err))
-		return
-	}
+		if err := p.QueueToWS(protocol.CmdNew{ID: id}); err != nil {
+			log.Warn("queue failed", zap.Error(err))
+			return nil
+		}
 
-	g.Go(func() error {
-		return rconn.StartWriter(ctx)
-	})
-
-	g.Go(func() error {
-		err := rconn.StartReader(ctx, func(message []byte) {
-			if len(message) == 0 {
-				if err := conn.Close(); err != nil {
-					log.Warn("close failed", zap.Error(err))
-				}
-				return
-			}
-
-			// log.Debug("received", zap.ByteString("data", message))
-
-			if err := p.QueueToWS(protocol.CmdData{ID: id, Bytes: message}); err != nil {
-				log.Warn("cmd failed", zap.Error(err))
-				return
-			}
+		g.Go(func() error {
+			return rconn.StartWriter(ctx)
 		})
+
+		g.Go(func() error {
+			err := rconn.StartReader(ctx, func(message []byte) {
+				if len(message) == 0 {
+					if err := conn.Close(); err != nil {
+						log.Warn("close failed", zap.Error(err))
+					}
+					return
+				}
+
+				if err := p.QueueToWS(protocol.CmdData{ID: id, Bytes: message}); err != nil {
+					log.Warn("cmd failed", zap.Error(err))
+					return
+				}
+			})
+			rconn.NotifyClose()
+			return err
+		})
+
+		<-ctx.Done()
+
 		rconn.NotifyClose()
-		return err
+
+		if err := p.QueueToWS(protocol.CmdClose{ID: id}); err != nil {
+			log.Warn("queue failed", zap.Error(err))
+		}
+
+		if err := conn.Close(); err != nil {
+			log.Warn("close failed", zap.Error(err))
+		}
+
+		if err := g.Wait(); err != nil {
+			log.Warn("conn failed", zap.Error(err))
+		}
+
+		return nil
 	})
-
-	<-ctx.Done()
-
-	rconn.NotifyClose()
-
-	if err := p.QueueToWS(protocol.CmdClose{ID: id}); err != nil {
-		log.Warn("queue failed", zap.Error(err))
-	}
-
-	if err := conn.Close(); err != nil {
-		log.Warn("close failed", zap.Error(err))
-	}
-
-	if err := g.Wait(); err != nil {
-		log.Warn("conn failed", zap.Error(err))
-	}
 }
 
-func (p *Proxy) workerReadWS(ctx context.Context) error {
+func (p *Proxy) workerReadWS(ctx context.Context, cmdChan chan protocol.Cmd) error {
 	log := logging.FromContext(ctx)
 
 	for {
@@ -233,44 +290,20 @@ func (p *Proxy) workerReadWS(ctx context.Context) error {
 			continue
 		}
 
-		switch cmd := cmd.(type) {
-		case protocol.CmdData:
-			p.connsMutex.RLock()
-			conn, ok := p.conns[cmd.ID]
-			p.connsMutex.RUnlock()
-			if !ok {
-				log.Warn("connection not found", zap.Uint32("conn_id", cmd.ID))
-				continue
-			}
-
-			conn.NotifyWrite(cmd.Bytes)
-
-		case protocol.CmdClose:
-			p.connsMutex.RLock()
-			conn, ok := p.conns[cmd.ID]
-			p.connsMutex.RUnlock()
-			if !ok {
-				log.Warn("connection not found", zap.Uint32("conn_id", cmd.ID))
-				continue
-			}
-
-			conn.NotifyClose()
-		}
+		cmdChan <- cmd
 	}
 }
 
-func (p *Proxy) workerSendQueue(ctx context.Context) error {
-	log := logging.FromContext(ctx)
-
+func (p *Proxy) workerSendQueue(wsConn *websocket.Conn, writeQueue chan []byte) error {
 	defer func() {
-		err := p.wsConn.Close()
-		if err != nil {
-			log.Warn("close failed", zap.Error(err))
-		}
+		go func() {
+			for range writeQueue {
+				// drain
+			}
+		}()
 	}()
-
-	for message := range p.writeQueue {
-		if err := p.wsConn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+	for message := range writeQueue {
+		if err := wsConn.WriteMessage(websocket.BinaryMessage, message); err != nil {
 			return err
 		}
 	}
