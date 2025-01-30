@@ -122,10 +122,8 @@ jobs:
       - name: Upload assets
         uses: actions/upload-artifact@v4
         with:
-          path: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*.txt
+          name: dist
+          path: dist/*
 
   release:
     needs:
