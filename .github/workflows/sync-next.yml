@@ -1,0 +1,26 @@
+name: sync next branch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+jobs:
+  sync-next-branch:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Push changes
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: next
+          force: true
