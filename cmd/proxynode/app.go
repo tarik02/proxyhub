@@ -152,6 +152,24 @@ func (a *App) workerWSRecv(ctx context.Context, ws *websocket.Conn) error {
 		case protocol.CmdMessage:
 			go a.OnServerMessage(cmd.Message)
 
+		case protocol.CmdPing:
+			log.Debug("got ping")
+			go func() {
+				var buf bytes.Buffer
+				err := protocol.WriteCmd(&buf, protocol.CmdPong{})
+				if err != nil {
+					log.Warn("command serialization failed", zap.Error(err))
+					return
+				}
+
+				a.mu.Lock()
+				defer a.mu.Unlock()
+				if a.closed {
+					return
+				}
+				a.wsToSend <- buf.Bytes()
+			}()
+
 		default:
 			log.Warn("unexpected command", zap.Any("cmd", cmd))
 		}

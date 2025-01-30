@@ -140,6 +140,9 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 	p.ready.Store(true)
 	p.port.Store(int32(l.Addr().(*net.TCPAddr).Port)) // nolint: gosec,forcetypeassert
 
+	t := time.Tick(15 * time.Second)
+	pongTimeOut := time.NewTicker(45 * time.Second)
+
 	for {
 		select {
 		case conn, ok := <-connsChan:
@@ -176,7 +179,21 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 				}
 
 				conn.NotifyClose()
+
+			case protocol.CmdPong:
+				log.Debug("got pong")
+				pongTimeOut.Reset(45 * time.Second)
 			}
+
+		case <-t:
+			log.Debug("sending ping")
+			if err := p.QueueToWS(protocol.CmdPing{}); err != nil {
+				log.Warn("sending ping failed", zap.Error(err))
+			}
+
+		case <-pongTimeOut.C:
+			log.Warn("pong timeout")
+			cancel(context.DeadlineExceeded)
 		}
 
 		if connsChan == nil && cmdChan == nil {

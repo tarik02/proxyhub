@@ -13,6 +13,8 @@ const (
 	CmdIDClose   CmdID = 1
 	CmdIDData    CmdID = 2
 	CmdIDMessage CmdID = 3
+	CmdIDPing    CmdID = 4
+	CmdIDPong    CmdID = 5
 )
 
 const MaxDataSize = 32 * 1024 * 1024
@@ -37,6 +39,9 @@ type CmdData struct {
 type CmdMessage struct {
 	Message string
 }
+
+type CmdPing struct{}
+type CmdPong struct{}
 
 func ReadCmd(r io.Reader) (Cmd, error) {
 	var buf [16]byte
@@ -93,6 +98,12 @@ func ReadCmd(r io.Reader) (Cmd, error) {
 		cmd.Message = string(msg)
 		return cmd, nil
 
+	case CmdIDPing:
+		return CmdPing{}, nil
+
+	case CmdIDPong:
+		return CmdPong{}, nil
+
 	default:
 		return nil, ErrInvalidCmdID
 	}
@@ -136,6 +147,20 @@ func WriteCmd(w io.Writer, cmd Cmd) error {
 			return err
 		}
 		if _, err := w.Write([]byte(cmd.Message)); err != nil {
+			return err
+		}
+		return nil
+
+	case CmdPing:
+		buf[0] = byte(CmdIDPing)
+		if _, err := w.Write(buf[0:1]); err != nil {
+			return err
+		}
+		return nil
+
+	case CmdPong:
+		buf[0] = byte(CmdIDPong)
+		if _, err := w.Write(buf[0:1]); err != nil {
 			return err
 		}
 		return nil
