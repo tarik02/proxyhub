@@ -108,13 +108,13 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 	close(p.writeQueue)
 	p.mu.Unlock()
 
+	if err2 := l.Close(); err2 != nil {
+		log.Warn("listener close failed", zap.Error(err2))
+	}
+
 	err = ctx.Err()
 	if err2 := p.wg.Wait(); err2 != nil {
 		err = err2
-	}
-
-	if err2 := l.Close(); err2 != nil {
-		log.Warn("listener close failed", zap.Error(err2))
 	}
 
 	return err
