@@ -106,7 +106,7 @@ jobs:
 
       - name: Build
         run: |
-          goreleaser release --clean
+          goreleaser release --clean --skip=validate
         env:
           GORELEASER_CURRENT_TAG: v${{ needs.get-version.outputs.snapshot_version }}
           GORELEASER_PREVIOUS_TAG: v${{ needs.get-version.outputs.last_version }}
