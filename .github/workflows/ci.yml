@@ -12,6 +12,7 @@ permissions:
   contents: write
   packages: write
   issues: write
+  pull-requests: write
   id-token: write
 
 jobs:
@@ -67,9 +68,6 @@ jobs:
 
     if: ${{ github.ref == 'refs/heads/next' && needs.get-version.outputs.upcoming_version }}
     runs-on: ubuntu-latest
-
-    permissions:
-      pull-requests: write
 
     steps:
       - name: Create/Update Pull Request
