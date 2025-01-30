@@ -25,6 +25,9 @@ jobs:
     if: ${{ github.ref == 'refs/heads/next' && needs.get-next-version.outputs.new-release-version }}
     runs-on: ubuntu-latest
 
+    permissions:
+      pull-requests: write
+
     steps:
       - name: Create/Update Pull Request
         run: |
