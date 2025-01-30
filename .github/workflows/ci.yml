@@ -1,0 +1,158 @@
+name: ci
+
+on:
+  workflow_dispatch:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  get-next-version:
+    uses: semantic-release-action/next-release-version/.github/workflows/next-release-version.yml@v4
+
+  get-version:
+    needs:
+      - get-next-version
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 2147483647
+
+      - name: Fetch tags
+        run: git fetch --tags
+
+      - if: ${{ github.ref == 'refs/heads/next' }}
+        id: get-next-tag
+        run: |
+          {
+            printf 'upcoming_version='
+            printf '%s' '${{ needs.get-next-version.outputs.new-release-version }}' | sed -E 's~^([0-9]+\.[0-9]+\.[0-9]+).*~\1~'
+            printf '\n'
+          } >> $GITHUB_OUTPUT
+
+      - if: ${{ github.ref != 'refs/heads/master' }}
+        id: get-latest-version
+        run: |
+          tag="$(git describe --tags --abbrev=0 2>/dev/null || echo 'v1.0.0')"
+          printf 'version=%s\n' "${tag#v}" >> $GITHUB_OUTPUT
+
+      - id: get-snapshot-version
+        if: ${{ github.ref != 'refs/heads/master' }}
+        run: |
+          printf 'snapshot_version=%s-%s\n' "${{ steps.get-latest-version.outputs.version }}" "${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+    outputs:
+      last_version: ${{ steps.get-latest-version.outputs.version }}
+      version: ${{ needs.get-next-version.outputs.new-release-version || steps.get-snapshot-version.outputs.snapshot_version || '1.0.0' }}
+      snapshot_version: ${{ steps.get-snapshot-version.outputs.snapshot_version }}
+      next_version: ${{ needs.get-next-version.outputs.new-release-version }}
+      upcoming_version: ${{ steps.get-next-tag.outputs.upcoming_version }}
+
+  next-pr:
+    needs:
+      - get-version
+
+    if: ${{ github.ref == 'refs/heads/next' && needs.get-version.outputs.upcoming_version }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create/Update Pull Request
+        run: |
+          pr_title="release v${{ needs.get-version.outputs.upcoming_version }}"
+          pr_url="$(gh --repo "$REPO" pr list --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --state open --limit 1 --json url --jq .[].url)"
+          if [[ -z "${pr_url}" ]]; then
+            gh --repo "$REPO" pr create -B "$BASE_BRANCH" -H "$HEAD_BRANCH" --title "$pr_title" --body ''
+          else
+            gh --repo "$REPO" pr edit "$pr_url" --title "$pr_title"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          HEAD_BRANCH: ${{ github.ref_name }}
+
+  build:
+    needs:
+      - get-version
+
+    if: ${{ ! needs.get-version.outputs.next_version }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        run: |
+          goreleaser release --clean --skip=validate
+        env:
+          GORELEASER_CURRENT_TAG: v${{ needs.get-version.outputs.snapshot_version }}
+          GORELEASER_PREVIOUS_TAG: v${{ needs.get-version.outputs.last_version }}
+          IS_SNAPSHOT: "true"
+
+      - name: Upload assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  release:
+    needs:
+      - get-version
+
+    if: ${{ needs.get-version.outputs.next_version }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # renovate: datasource=github-releases depName=semantic-release packageName=semantic-release/semantic-release
+          semantic_version: 24.2.1
+          extra_plugins: |
+            @semantic-release/exec@6.0.3

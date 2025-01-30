@@ -1,0 +1,35 @@
+name: check
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v2
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6.1.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          install-mode: none
+          only-new-issues: true
+          args: --timeout 3m --verbose

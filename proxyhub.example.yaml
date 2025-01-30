@@ -1,0 +1,13 @@
+log:
+  level: debug
+
+bind: 0.0.0.0:8080
+motd: "Welcome to proxyhub!"
+
+proxies:
+  proxy-1:
+    username: username
+    password: password
+
+apiTokens:
+  - token1
