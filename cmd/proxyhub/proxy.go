@@ -79,6 +79,8 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 
 	connsChan := make(chan net.Conn, 16)
 	p.wg.Go(func() error {
+		defer log.Debug("listener closed")
+		defer close(connsChan)
 		return util.ListenToChan(l, connsChan)
 	})
 
@@ -86,21 +88,28 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 		<-ctx.Done()
 
 		p.wg.Go(func() error {
+			defer log.Debug("ws conn closed")
 			return p.wsConn.Close()
 		})
 
 		p.wg.Go(func() error {
-			defer close(connsChan)
-
+			log.Debug("closing listener")
 			if err := l.Close(); err != nil {
 				log.Warn("listener close failed", zap.Error(err))
 			}
 
 			p.wg.Go(func() error {
-				for conn := range connsChan {
+				defer log.Debug("done draining conns")
+				c := connsChan
+				if c == nil {
+					return nil
+				}
+				for conn := range c {
+					log.Debug("closing conn")
 					if err := conn.Close(); err != nil {
 						log.Warn("close failed", zap.Error(err))
 					}
+					log.Debug("conn closed")
 				}
 				return nil
 			})
@@ -114,11 +123,13 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 	writeQueue := make(chan []byte, 16)
 	p.writeQueue = writeQueue
 	p.wg.Go(func() error {
+		defer log.Debug("worker send queue closed")
 		return p.workerSendQueue(p.wsConn, p.writeQueue)
 	})
 
 	cmdChan := make(chan protocol.Cmd, 16)
 	p.wg.Go(func() error {
+		defer log.Debug("worker read ws closed")
 		defer close(cmdChan)
 		return p.workerReadWS(ctx, cmdChan)
 	})
@@ -133,7 +144,7 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 		select {
 		case conn, ok := <-connsChan:
 			if !ok {
-				log.Debug("conns chan closed")
+				log.Debug("got conns chan closed")
 				connsChan = nil
 				cancel(context.Canceled)
 				break
@@ -142,7 +153,7 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 
 		case cmd, ok := <-cmdChan:
 			if !ok {
-				log.Debug("cmd chan closed")
+				log.Debug("got cmd chan closed")
 				cmdChan = nil
 				cancel(context.Canceled)
 				break
@@ -208,12 +219,12 @@ func (p *Proxy) QueueToWS(cmd protocol.Cmd) error {
 
 func (p *Proxy) handleConn(ctx context.Context, conn net.Conn) {
 	id := atomic.AddUint32(&p.connCounter, 1)
+	log := logging.FromContext(ctx, zap.Uint32("conn_id", id))
 
 	rconn := NewRemoteConn(id, conn)
 	p.conns[id] = rconn
 
 	p.wg.Go(func() error {
-		log := logging.FromContext(ctx, zap.Uint32("conn_id", id))
 		log.Info("connection accepted")
 
 		g, ctx := errgroup.WithContext(ctx)
@@ -224,10 +235,12 @@ func (p *Proxy) handleConn(ctx context.Context, conn net.Conn) {
 		}
 
 		g.Go(func() error {
+			defer log.Debug("writer closed")
 			return rconn.StartWriter(ctx)
 		})
 
 		g.Go(func() error {
+			defer log.Debug("reader closed")
 			err := rconn.StartReader(ctx, func(message []byte) {
 				if len(message) == 0 {
 					if err := conn.Close(); err != nil {
@@ -247,6 +260,7 @@ func (p *Proxy) handleConn(ctx context.Context, conn net.Conn) {
 
 		<-ctx.Done()
 
+		log.Debug("notifying remote conn to close")
 		rconn.NotifyClose()
 
 		if err := p.QueueToWS(protocol.CmdClose{ID: id}); err != nil {

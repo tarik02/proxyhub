@@ -26,6 +26,7 @@ func NewRemoteConn(id uint32, conn net.Conn) *RemoteConn {
 
 func (c *RemoteConn) StartWriter(ctx context.Context) error {
 	log := logging.FromContext(ctx, zap.Uint32("remote_conn_id", c.id))
+	defer log.Debug("writer closed")
 
 	defer func() {
 		if err := c.conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
@@ -34,6 +35,7 @@ func (c *RemoteConn) StartWriter(ctx context.Context) error {
 	}()
 
 	for message := range c.writeQueue {
+		log.Debug("write", zap.ByteString("message", message))
 		if len(message) == 0 {
 			break
 		}
@@ -43,11 +45,18 @@ func (c *RemoteConn) StartWriter(ctx context.Context) error {
 		}
 	}
 
+	go func() {
+		for range c.writeQueue {
+			// drain
+		}
+	}()
+
 	return nil
 }
 
 func (c *RemoteConn) StartReader(ctx context.Context, onMessage func(message []byte)) error {
-	_ = ctx
+	log := logging.FromContext(ctx, zap.Uint32("remote_conn_id", c.id))
+	defer log.Debug("reader closed")
 
 	for {
 		buf := make([]byte, 16*1024)
