@@ -2,6 +2,7 @@ package entevents
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -66,7 +67,8 @@ func (e *Manager[T]) Del(id string) {
 		return
 	}
 
-	e.Events <- EntityEvent[T]{ID: id, Type: EventTypeDel, Payload: id}
+	p, _ := json.Marshal(id)
+	e.Events <- EntityEvent[T]{ID: id, Type: EventTypeDel, Payload: p}
 }
 
 func (e *Manager[T]) Update(id string, entity T, payload any) {
