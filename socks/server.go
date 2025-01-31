@@ -30,7 +30,7 @@ type Socks5Server struct {
 	ValidateTarget func(ctx context.Context, target string) error
 }
 
-func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
+func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) error {
 	log := logging.FromContext(ctx)
 
 	buf := make([]byte, 16*1024)
@@ -113,11 +113,14 @@ func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.Writer) error 
 	g.Go(func() error {
 		defer conn.Close()
 		_, err := io.Copy(conn, r)
+		log.Debug("downstream connection closed", zap.Error(err))
 		return err
 	})
 
 	g.Go(func() error {
+		defer w.Close()
 		_, err := io.Copy(w, conn)
+		log.Debug("upstream connection closed", zap.Error(err))
 		return err
 	})
 

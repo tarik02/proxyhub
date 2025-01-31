@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -32,7 +33,7 @@ type Manager[T any] struct {
 
 	Events chan EntityEvent[T]
 
-	closed bool
+	closed atomic.Bool
 	mu     sync.Mutex
 }
 
@@ -51,7 +52,7 @@ func New[T any]() *Manager[T] {
 func (e *Manager[T]) Add(id string, entity T) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.closed {
+	if e.closed.Load() {
 		return
 	}
 
@@ -61,7 +62,7 @@ func (e *Manager[T]) Add(id string, entity T) {
 func (e *Manager[T]) Del(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.closed {
+	if e.closed.Load() {
 		return
 	}
 
@@ -71,7 +72,7 @@ func (e *Manager[T]) Del(id string) {
 func (e *Manager[T]) Update(id string, entity T, payload any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.closed {
+	if e.closed.Load() {
 		return
 	}
 
@@ -81,7 +82,7 @@ func (e *Manager[T]) Update(id string, entity T, payload any) {
 func (e *Manager[T]) Run(ctx context.Context) error {
 	defer func() {
 		e.mu.Lock()
-		e.closed = true
+		e.closed.Store(true)
 		e.mu.Unlock()
 
 		defer close(e.NewClients)
@@ -174,7 +175,11 @@ func (e *Manager[T]) ServeSnapshot(c *gin.Context) {
 		for range clientChan {
 		}
 	}()
-	e.ClosedClients <- clientChan
+	e.mu.Lock()
+	if !e.closed.Load() {
+		e.ClosedClients <- clientChan
+	}
+	e.mu.Unlock()
 
 	zap.S().Debugf("serving snapshot: %v", snapshot.Payload)
 	c.JSON(200, snapshot.Payload)
@@ -196,7 +201,11 @@ func (e *Manager[T]) ServeSSE(c *gin.Context) {
 			}
 		}()
 		// Send closed connection to event server
-		e.ClosedClients <- clientChan
+		e.mu.Lock()
+		if !e.closed.Load() {
+			e.ClosedClients <- clientChan
+		}
+		e.mu.Unlock()
 	}()
 
 	c.Stream(func(w io.Writer) bool {

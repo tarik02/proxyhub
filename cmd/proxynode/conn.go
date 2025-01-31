@@ -59,6 +59,7 @@ func (c *Connection) Close() error {
 	}
 	c.closed = true
 	close(c.queue)
+	_ = c.connToWsWrite.Close()
 	return nil
 }
 
@@ -81,6 +82,8 @@ func (c *Connection) Process(ctx context.Context, handler CmdHandler) error {
 	})
 
 	<-ctx.Done()
+
+	handler(protocol.CmdClose{ID: c.id})
 
 	if err := c.connToWsWrite.Close(); err != nil {
 		log.Warn("connection to ws write close error", zap.Error(err))

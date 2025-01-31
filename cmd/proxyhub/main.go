@@ -162,7 +162,31 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 	})
 
-	r.GET("/api/proxies", proxyEvents.ServeSnapshot)
+	r.GET("/socks/:id", tokenAuth, func(c *gin.Context) {
+		p := proxyMan.GetProxy(c.Param("id"))
+		if p == nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+
+		var upgrader = websocket.Upgrader{}
+
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			log.Warn("upgrade failed", zap.Error(err))
+			return
+		}
+
+		wsPipe := NewWSPipe(conn)
+
+		if err := p.QueueConn(wsPipe); err != nil {
+			log.Warn("queue conn failed", zap.Error(err))
+			_ = conn.Close()
+			return
+		}
+	})
+
+	r.GET("/api/proxies", tokenAuth, proxyEvents.ServeSnapshot)
 	r.GET("/api/proxies/live", tokenAuth, proxyEvents.ServeSSE)
 
 	wg.Go(func() error {

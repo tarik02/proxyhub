@@ -54,6 +54,13 @@ func (p *ProxyManager) GetProxies() []*Proxy {
 	return proxies
 }
 
+func (p *ProxyManager) GetProxy(id string) *Proxy {
+	p.proxiesMu.RLock()
+	defer p.proxiesMu.RUnlock()
+
+	return p.proxies[id]
+}
+
 func (p *ProxyManager) Run(ctx context.Context) error {
 	p.wg, ctx = errgroup.WithContext(ctx)
 

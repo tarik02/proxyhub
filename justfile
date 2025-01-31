@@ -1,3 +1,6 @@
+lint:
+    golangci-lint run
+
 hub:
     go run ./cmd/proxyhub
 

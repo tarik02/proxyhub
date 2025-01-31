@@ -12,11 +12,11 @@ import (
 
 type RemoteConn struct {
 	id         uint32
-	conn       net.Conn
+	conn       io.ReadWriteCloser
 	writeQueue chan []byte
 }
 
-func NewRemoteConn(id uint32, conn net.Conn) *RemoteConn {
+func NewRemoteConn(id uint32, conn io.ReadWriteCloser) *RemoteConn {
 	return &RemoteConn{
 		id:         id,
 		conn:       conn,

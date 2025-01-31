@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tarik02/proxyhub/logging"
 	"github.com/tarik02/proxyhub/protocol"
-	"github.com/tarik02/proxyhub/util"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -29,6 +29,7 @@ type Proxy struct {
 
 	wsConn     *websocket.Conn
 	conns      map[uint32]*RemoteConn
+	connsChan  chan io.ReadWriteCloser
 	writeQueue chan []byte
 	wg         *errgroup.Group
 }
@@ -77,11 +78,24 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 
 	p.wg, ctx = errgroup.WithContext(ctx)
 
-	connsChan := make(chan net.Conn, 16)
+	connsChan := make(chan io.ReadWriteCloser, 16)
+	p.connsChan = connsChan
 	p.wg.Go(func() error {
 		defer log.Debug("listener closed")
-		defer close(connsChan)
-		return util.ListenToChan(l, connsChan)
+		defer func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			close(p.connsChan)
+			p.connsChan = nil
+		}()
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return err
+			}
+
+			p.connsChan <- conn
+		}
 	})
 
 	p.wg.Go(func() error {
@@ -218,6 +232,16 @@ func (p *Proxy) Run(ctx context.Context, onReady func()) error {
 	return err
 }
 
+func (p *Proxy) QueueConn(conn io.ReadWriteCloser) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.connsChan == nil {
+		return net.ErrClosed
+	}
+	p.connsChan <- conn
+	return nil
+}
+
 func (p *Proxy) QueueToWS(cmd protocol.Cmd) error {
 	var buf bytes.Buffer
 	if err := protocol.WriteCmd(&buf, cmd); err != nil {
@@ -234,7 +258,7 @@ func (p *Proxy) QueueToWS(cmd protocol.Cmd) error {
 	return nil
 }
 
-func (p *Proxy) handleConn(ctx context.Context, conn net.Conn) {
+func (p *Proxy) handleConn(ctx context.Context, conn io.ReadWriteCloser) {
 	id := atomic.AddUint32(&p.connCounter, 1)
 	log := logging.FromContext(ctx, zap.Uint32("conn_id", id))
 
