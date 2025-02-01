@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -114,6 +115,8 @@ func (e *Manager[T]) Run(ctx context.Context) error {
 		}
 	}()
 
+	t := time.Tick(1 * time.Second)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,6 +138,11 @@ func (e *Manager[T]) Run(ctx context.Context) error {
 
 		case eventMsg := <-e.Events:
 			e.processEvent(eventMsg)
+
+		case <-t:
+			for client := range e.TotalClients {
+				client <- EntityEvent[T]{Type: "ping", Payload: "null"}
+			}
 		}
 	}
 }
