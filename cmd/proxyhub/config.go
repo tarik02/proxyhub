@@ -21,6 +21,11 @@ type Config struct {
 	APITokens []string
 }
 
+func (c *Config) FindProxyConfigByID(id string) (proxy ConfigProxy, ok bool) {
+	proxy, ok = c.Proxies[id]
+	return
+}
+
 func (c *Config) FindProxyConfigByUsername(username string) (id string, proxy ConfigProxy, ok bool) {
 	for id, proxy = range c.Proxies {
 		if proxy.Username == username {
