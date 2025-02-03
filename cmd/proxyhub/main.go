@@ -158,6 +158,8 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			return
 		}
 
+		clientVersion := c.GetHeader("X-Version")
+
 		var upgrader = websocket.Upgrader{}
 
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -182,7 +184,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			return
 		}
 
-		proxy := proxyhub.NewProxy(ctx, id, listener, wsstream, session)
+		proxy := proxyhub.NewProxy(ctx, id, clientVersion, listener, wsstream, session)
 
 		if err := hub.HandleJoinProxy(ctx, proxy); err != nil {
 			_ = proxy.Close()

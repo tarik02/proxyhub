@@ -19,6 +19,7 @@ import (
 
 type Proxy struct {
 	id      string
+	version string
 	started time.Time
 
 	listener net.Listener
@@ -38,11 +39,12 @@ type Proxy struct {
 	closedCh          chan struct{}
 }
 
-func NewProxy(ctx context.Context, id string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
+func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
 	log := logging.FromContext(ctx, zap.String("proxy_id", id)).Named("proxy")
 
 	res := &Proxy{
 		id:      id,
+		version: version,
 		started: time.Now(),
 
 		listener: listener,
