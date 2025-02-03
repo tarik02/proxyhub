@@ -2,4 +2,5 @@
 go = "1.23.5"
 golangci-lint = "1.63.4"
 goreleaser = "2.6.1"
+just = "1.38.0"
 protoc-gen-go = "1.36.4"
