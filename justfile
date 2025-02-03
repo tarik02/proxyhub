@@ -1,6 +1,10 @@
 lint:
     golangci-lint run
 
+gen:
+    protoc -I=. --go_out=. --go_opt=paths=source_relative ./**/*.proto
+    go generate ./...
+
 hub:
     go run ./cmd/proxyhub
 
