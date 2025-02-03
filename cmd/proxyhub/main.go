@@ -118,6 +118,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		go func() {
 			if err := proxyEvents.Add(ctx, p.ID(), api.Proxy{
 				ID:      p.ID(),
+				Version: p.Version(),
 				Port:    p.Port(),
 				Started: p.Started().Unix(),
 			}); err != nil {

@@ -91,6 +91,10 @@ func (p *Proxy) ID() string {
 	return p.id
 }
 
+func (p *Proxy) Version() string {
+	return p.version
+}
+
 func (p *Proxy) Started() time.Time {
 	return p.started
 }
