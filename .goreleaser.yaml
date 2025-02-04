@@ -111,5 +111,5 @@ kos:
     platforms:
       - linux/amd64
       - linux/arm64
-      - linux/arm
+      - linux/arm/v7
     bare: true
