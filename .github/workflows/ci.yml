@@ -157,6 +157,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           # renovate: datasource=github-releases depName=semantic-release packageName=semantic-release/semantic-release
-          semantic_version: 24.2.2
+          semantic_version: 24.2.3
           extra_plugins: |
             @semantic-release/exec@6.0.3
