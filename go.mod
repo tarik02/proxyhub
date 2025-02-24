@@ -3,7 +3,7 @@ module github.com/tarik02/proxyhub
 go 1.23.4
 
 require (
-	github.com/elazarl/goproxy v1.7.0
+	github.com/elazarl/goproxy v1.7.2
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/mitchellh/mapstructure v1.5.0
