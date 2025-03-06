@@ -20,6 +20,8 @@ github.com/elazarl/goproxy/ext v0.0.0-20250128221911-e749b3b1f72e h1:rJCtxmmCOka
 github.com/elazarl/goproxy/ext v0.0.0-20250128221911-e749b3b1f72e/go.mod h1:q2JQCFWg+AQfe6O2cbf7LJDB48R68w+q0pBU53v02iM=
 github.com/elazarl/goproxy/ext v0.0.0-20250211062816-591e8ff5cb53 h1:4OzpTS+n6w5buDy4bqtXbFekaCvfUfGJ53StOy9U8i8=
 github.com/elazarl/goproxy/ext v0.0.0-20250211062816-591e8ff5cb53/go.mod h1:xIM0lXW6YOD9Jrh0HQu1rA4PTYeGs0z3gx3wRbgPGQs=
+github.com/elazarl/goproxy/ext v0.0.0-20250305112401-088f758167d2 h1:4zAtxhYHwEwywgnQarWXwUHJMGHpWCIwDWP03x32FNQ=
+github.com/elazarl/goproxy/ext v0.0.0-20250305112401-088f758167d2/go.mod h1:fx75f98CST5mRiLRu5fYLHj5hx641zC7dcN+cT88gmo=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=
