@@ -21,6 +21,10 @@ type Config struct {
 	Bind string
 	Motd string
 
+	Metrics struct {
+		Enabled bool
+	}
+
 	Proxies   map[string]ConfigProxy
 	APITokens []string
 }

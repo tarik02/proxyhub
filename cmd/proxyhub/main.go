@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/mitchellh/mapstructure"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/viper"
 	"github.com/tarik02/proxyhub/api"
 	"github.com/tarik02/proxyhub/entevents"
@@ -162,6 +163,15 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	r.GET("/metrics", func(ctx *gin.Context) {
+		if !config.Metrics.Enabled {
+			ctx.Status(http.StatusNotFound)
+			return
+		}
+
+		promhttp.Handler().ServeHTTP(ctx.Writer, ctx.Request)
+	})
+
 	r.GET("/join", func(c *gin.Context) {
 		rid := uuid.New().String()
 		log := log.With(zap.String("rid", rid))
@@ -213,6 +223,14 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 
 		proxy := proxyhub.NewProxy(ctx, id, clientVersion, listener, wsstream, session)
+
+		proxy.OnConnection = func() {
+			proxyConnsTotalMetric.WithLabelValues(proxy.ID()).Inc()
+		}
+		proxy.OnConnectionStats = func(recv, sent int64) {
+			proxyRecvTotalMetric.WithLabelValues(proxy.ID()).Add(float64(recv))
+			proxySentTotalMetric.WithLabelValues(proxy.ID()).Add(float64(sent))
+		}
 
 		if err := hub.HandleJoinProxy(ctx, proxy); err != nil {
 			_ = proxy.Close()

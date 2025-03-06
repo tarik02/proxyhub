@@ -37,6 +37,9 @@ type Proxy struct {
 	acceptConnsDoneCh chan struct{}
 	runDoneCh         chan struct{}
 	closedCh          chan struct{}
+
+	OnConnection      func()
+	OnConnectionStats func(recv, sent int64)
 }
 
 func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
@@ -57,6 +60,9 @@ func NewProxy(ctx context.Context, id string, version string, listener net.Liste
 		acceptConnsDoneCh: make(chan struct{}),
 		runDoneCh:         make(chan struct{}),
 		closedCh:          make(chan struct{}),
+
+		OnConnection:      func() {},
+		OnConnectionStats: func(recv, sent int64) {},
 	}
 
 	go res.acceptConns(ctx)
@@ -221,6 +227,8 @@ loop:
 			go func() {
 				defer wg.Done()
 
+				go p.OnConnection()
+
 				stream, err := p.session.OpenStream()
 				if err != nil {
 					_ = conn.Close()
@@ -229,16 +237,27 @@ loop:
 
 				ch1, ch2 := make(chan struct{}), make(chan struct{})
 
+				recv, sent := int64(0), int64(0)
+
+				wg := sync.WaitGroup{}
+				wg.Add(2)
+
 				go func() {
+					defer wg.Done()
 					defer close(ch1)
-					if _, err2 := io.Copy(stream, conn); err != nil {
+					bytes, err2 := io.Copy(stream, conn)
+					sent += bytes
+					if err2 != nil {
 						err = err2
 					}
 				}()
 
 				go func() {
+					defer wg.Done()
 					defer close(ch2)
-					if _, err2 := io.Copy(conn, stream); err != nil {
+					bytes, err2 := io.Copy(conn, stream)
+					recv += bytes
+					if err2 != nil {
 						err = err2
 					}
 				}()
@@ -253,6 +272,10 @@ loop:
 				case <-ch2:
 					_ = conn.Close()
 				}
+
+				wg.Wait()
+
+				go p.OnConnectionStats(recv, sent)
 			}()
 		}
 	}

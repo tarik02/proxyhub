@@ -32,6 +32,7 @@ type Proxyhub struct {
 	ValidateAPIToken func(string) bool
 	OnProxyAdded     func(*Proxy)
 	OnProxyRemoved   func(*Proxy)
+	OnConnection     func()
 }
 
 func New(ctx context.Context) *Proxyhub {
