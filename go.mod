@@ -3,7 +3,7 @@ module github.com/tarik02/proxyhub
 go 1.23.4
 
 require (
-	github.com/elazarl/goproxy v1.7.0
+	github.com/elazarl/goproxy v1.7.2
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/mitchellh/mapstructure v1.5.0
@@ -31,7 +31,7 @@ require (
 	github.com/bytedance/sonic v1.12.7 // indirect
 	github.com/bytedance/sonic/loader v0.2.3 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
-	github.com/elazarl/goproxy/ext v0.0.0-20250211062816-591e8ff5cb53
+	github.com/elazarl/goproxy/ext v0.0.0-20250305112401-088f758167d2
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/gin-contrib/sse v1.0.0 // indirect
 	github.com/gin-contrib/zap v1.1.4
@@ -58,11 +58,11 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0
 	golang.org/x/arch v0.13.0 // indirect
-	golang.org/x/crypto v0.33.0 // indirect
-	golang.org/x/net v0.35.0
-	golang.org/x/sync v0.11.0
-	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
+	golang.org/x/crypto v0.36.0 // indirect
+	golang.org/x/net v0.37.0
+	golang.org/x/sync v0.12.0
+	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
 	google.golang.org/protobuf v1.36.5
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
