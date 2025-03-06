@@ -78,6 +78,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		))); err != nil {
 			return config, fmt.Errorf("error unmarshalling config: %w", err)
 		}
+		config.ApplyDefaults()
 		return config, nil
 	}
 
@@ -88,12 +89,22 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		config = c
 	}
 
-	log = prettyconsole.NewLogger(config.Log.Level)
+	log, err := config.Log.CreateLogger()
+	if err != nil {
+		return err
+	}
 	*rootLog = log
 	zap.ReplaceGlobals(log)
 
 	ctx = logging.WithLogger(ctx, log)
-	// wg, ctx := errgroup.WithContext(ctx)
+
+	switch config.Mode {
+	case ConfigModeDevelopment:
+		gin.SetMode(gin.DebugMode)
+
+	case ConfigModeProduction:
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	r := gin.New()
 	r.Use(ginzap.Ginzap(log, time.RFC3339, true))

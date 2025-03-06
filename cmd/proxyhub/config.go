@@ -1,7 +1,12 @@
 package main
 
-import (
-	"go.uber.org/zap/zapcore"
+import "github.com/tarik02/proxyhub/logging"
+
+type ConfigMode string
+
+const (
+	ConfigModeDevelopment ConfigMode = "development"
+	ConfigModeProduction  ConfigMode = "production"
 )
 
 type ConfigProxy struct {
@@ -10,15 +15,24 @@ type ConfigProxy struct {
 }
 
 type Config struct {
-	Log struct {
-		Level zapcore.Level
-	}
+	Mode ConfigMode
+	Log  logging.Config
 
 	Bind string
 	Motd string
 
 	Proxies   map[string]ConfigProxy
 	APITokens []string
+}
+
+func (c *Config) ApplyDefaults() {
+	if c.Mode == "" {
+		c.Mode = ConfigModeDevelopment
+	}
+	if c.Log.Pretty == nil {
+		v := c.Mode == ConfigModeDevelopment
+		c.Log.Pretty = &v
+	}
 }
 
 func (c *Config) FindProxyConfigByID(id string) (proxy ConfigProxy, ok bool) {

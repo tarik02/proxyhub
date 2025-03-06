@@ -77,7 +77,10 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		config = c
 	}
 
-	log = prettyconsole.NewLogger(config.Log.Level)
+	log, err := config.Log.CreateLogger()
+	if err != nil {
+		return err
+	}
 	*rootLog = log
 	zap.ReplaceGlobals(log)
 
