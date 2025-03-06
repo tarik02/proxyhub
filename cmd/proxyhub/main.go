@@ -135,6 +135,22 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}()
 	}
 
+	r.GET("/healthz", func(c *gin.Context) {
+		select {
+		case <-ctx.Done():
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "context cancelled"})
+			return
+
+		case <-shutdownChan:
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "shutting down"})
+			return
+
+		default:
+		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	r.GET("/join", func(c *gin.Context) {
 		rid := uuid.New().String()
 		log := log.With(zap.String("rid", rid))
