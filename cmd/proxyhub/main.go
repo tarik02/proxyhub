@@ -164,6 +164,11 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	})
 
 	r.GET("/metrics", func(ctx *gin.Context) {
+		if !config.Metrics.Enabled {
+			ctx.Status(http.StatusNotFound)
+			return
+		}
+
 		promhttp.Handler().ServeHTTP(ctx.Writer, ctx.Request)
 	})
 
