@@ -214,6 +214,8 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			return
 		}
 
+		log.Debug("created listener for proxy", zap.String("proxyId", id), zap.String("addr", listener.Addr().String()))
+
 		wsstream := wsstream.New(conn)
 		session, err := yamux.Client(wsstream, yamux.DefaultConfig())
 		if err != nil {
