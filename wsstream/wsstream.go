@@ -63,6 +63,8 @@ func New(conn *websocket.Conn) *WSStream {
 	}()
 
 	go func() {
+		defer close(writeBinaryChan)
+
 		for {
 			b := make([]byte, 4096)
 			n, err := readOut.Read(b)
@@ -75,7 +77,9 @@ func New(conn *websocket.Conn) *WSStream {
 	}()
 
 	go func() {
-		// defer close(writeTextClosed)
+		defer res.writeTextClosedOnce.Do(func() {
+			close(res.writeTextClosed)
+		})
 
 		for {
 			if writeBinaryChan == nil && writeTextChan == nil {
@@ -94,10 +98,6 @@ func New(conn *websocket.Conn) *WSStream {
 				}
 
 			case s := <-writeTextChan:
-				// if !ok {
-				// 	writeTextChan = nil
-				// 	continue
-				// }
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(s)); err != nil {
 					_ = readOut.CloseWithError(err)
 					return

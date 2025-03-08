@@ -291,6 +291,13 @@ loop:
 	} else {
 		log.Debug("session closed")
 	}
+
+	if err := p.ws.Close(); err != nil {
+		log.Debug("ws close failed", zap.Error(err))
+		p.exitErr(err)
+	} else {
+		log.Debug("ws closed")
+	}
 }
 
 func (p *Proxy) exitErr(err error) {
