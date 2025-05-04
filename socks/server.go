@@ -11,7 +11,6 @@ import (
 	"github.com/tarik02/proxyhub/logging"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -108,23 +107,47 @@ func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) e
 
 	log.Debug("connected", zap.String("target", target))
 
-	g, ctx := errgroup.WithContext(ctx)
+	doneConnChan := make(chan struct{})
+	doneWriterChan := make(chan struct{})
 
-	g.Go(func() error {
-		defer conn.Close()
+	go func() {
+		defer close(doneConnChan)
 		_, err := io.Copy(conn, r)
 		log.Debug("downstream connection closed", zap.Error(err))
-		return err
-	})
+	}()
 
-	g.Go(func() error {
-		defer w.Close()
+	go func() {
+		defer close(doneWriterChan)
 		_, err := io.Copy(w, conn)
 		log.Debug("upstream connection closed", zap.Error(err))
-		return err
-	})
+	}()
 
-	<-ctx.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+			_ = w.Close()
+			if doneConnChan != nil {
+				<-doneConnChan
+			}
+			if doneWriterChan != nil {
+				<-doneWriterChan
+			}
+			return ctx.Err()
 
-	return g.Wait()
+		case <-doneConnChan:
+			_ = conn.Close()
+			doneConnChan = nil
+
+		case <-doneWriterChan:
+			_ = w.Close()
+			doneWriterChan = nil
+		}
+
+		if doneConnChan == nil && doneWriterChan == nil {
+			break
+		}
+	}
+
+	return nil
 }
