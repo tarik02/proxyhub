@@ -110,7 +110,6 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	}
 
 	var wg sync.WaitGroup
-	defer wg.Wait()
 
 	go func() {
 		s := make(chan os.Signal, 1)
