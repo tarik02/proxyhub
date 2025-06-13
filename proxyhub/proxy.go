@@ -22,9 +22,10 @@ type Proxy struct {
 	version string
 	started time.Time
 
-	listener net.Listener
-	ws       *wsstream.WSStream
-	session  *yamux.Session
+	listener        net.Listener
+	ws              *wsstream.WSStream
+	session         *yamux.Session
+	egressWhitelist []string
 
 	connsChan chan io.ReadWriteCloser
 
@@ -42,13 +43,14 @@ type Proxy struct {
 	OnConnectionStats func(recv, sent int64)
 }
 
-func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
+func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session, egressWhitelist []string) *Proxy {
 	log := logging.FromContext(ctx, zap.String("proxy_id", id)).Named("proxy")
 
 	res := &Proxy{
-		id:      id,
-		version: version,
-		started: time.Now(),
+		id:              id,
+		version:         version,
+		started:         time.Now(),
+		egressWhitelist: egressWhitelist,
 
 		listener: listener,
 		ws:       ws,
@@ -112,6 +114,10 @@ func (p *Proxy) Port() int {
 		}
 	}
 	return 0
+}
+
+func (p *Proxy) EgressWhitelist() []string {
+	return p.egressWhitelist
 }
 
 func (p *Proxy) SendMOTD(message string) error {

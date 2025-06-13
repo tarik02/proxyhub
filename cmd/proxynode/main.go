@@ -63,7 +63,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		var config Config
 		if err := viper.UnmarshalExact(&config, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
 			logging.StringToLogLevelHookFunc(),
-			util.StringToGlobHookFunc(),
+			util.StringToGlobHookFunc('.', ':'),
 		))); err != nil {
 			return config, fmt.Errorf("error unmarshalling config: %w", err)
 		}
@@ -170,20 +170,18 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 loop:
 	for {
 		app := proxynode.New(ctx, proxynode.Params{
-			Version:  version,
-			Endpoint: config.Endpoint,
-			Username: config.Username,
-			Password: config.Password,
+			Version:         version,
+			Endpoint:        config.Endpoint,
+			Username:        config.Username,
+			Password:        config.Password,
+			EgressWhitelist: config.EgressWhitelistString,
 		})
 
 		app.Handler = func(conn *yamux.Stream) {
 			log.Info("new connection", zap.Uint32("id", conn.StreamID()))
 
-			if err := s.Run(logging.WithLogger(ctx, log.Named("socks5")), conn, conn); err != nil {
+			if err := s.ServeConn(logging.WithLogger(ctx, log.Named("socks5")), conn); err != nil {
 				log.Warn("socks5 server error", zap.Error(err))
-			}
-			if err := conn.Close(); err != nil {
-				log.Warn("connection close error", zap.Error(err))
 			}
 		}
 

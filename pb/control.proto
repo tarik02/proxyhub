@@ -12,8 +12,13 @@ message Control {
         string reason = 1;
     }
 
+    message ClientHello {
+        repeated string egressWhitelist = 1;
+    }
+
     oneof message {
         Disconnect disconnect = 1;
         MOTD motd = 2;
+        ClientHello clientHello = 3;
     }
 }

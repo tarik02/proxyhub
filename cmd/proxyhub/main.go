@@ -25,6 +25,7 @@ import (
 	"github.com/tarik02/proxyhub/util"
 	"github.com/tarik02/proxyhub/wsstream"
 	bearertoken "github.com/vence722/gin-middleware-bearer-token"
+	"golang.org/x/mod/semver"
 
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
@@ -129,10 +130,11 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 		go func() {
 			if err := proxyEvents.Add(ctx, p.ID(), api.Proxy{
-				ID:      p.ID(),
-				Version: p.Version(),
-				Port:    p.Port(),
-				Started: p.Started().Unix(),
+				ID:              p.ID(),
+				Version:         p.Version(),
+				Port:            p.Port(),
+				Started:         p.Started().Unix(),
+				EgressWhitelist: p.EgressWhitelist(),
 			}); err != nil {
 				log.Debug("proxyevents.Add failed", zap.Error(err))
 			}
@@ -224,7 +226,21 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			return
 		}
 
-		proxy := proxyhub.NewProxy(ctx, id, clientVersion, listener, wsstream, session)
+		var egressWhitelist []string
+		if !semver.IsValid(clientVersion) || semver.Compare(clientVersion, "2.0.0") > 0 {
+			hello, err := proxyhub.ReadProxyHello(ctx, wsstream)
+			if err != nil {
+				log.Warn("read hello failed", zap.Error(err))
+				_ = listener.Close()
+				_ = conn.Close()
+				return
+			}
+			egressWhitelist = hello.EgressWhitelist
+		} else {
+			log.Warn("client version is too old, not expecting hello from him")
+		}
+
+		proxy := proxyhub.NewProxy(ctx, id, clientVersion, listener, wsstream, session, egressWhitelist)
 
 		proxy.OnConnection = func() {
 			proxyConnsTotalMetric.WithLabelValues(proxy.ID()).Inc()

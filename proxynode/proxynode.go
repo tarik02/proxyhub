@@ -19,10 +19,11 @@ import (
 )
 
 type Params struct {
-	Version  string
-	Endpoint string
-	Username string
-	Password string
+	Version         string
+	Endpoint        string
+	Username        string
+	Password        string
+	EgressWhitelist []string
 }
 
 var ErrShutdown = errors.New("shutdown")
@@ -118,6 +119,23 @@ func (a *Proxynode) run(ctx context.Context) {
 	session, err := yamux.Server(wsstream, yamux.DefaultConfig())
 	if err != nil {
 		a.exitErr(err)
+		_ = conn.Close()
+		return
+	}
+
+	hello := &pb.Control{
+		Message: &pb.Control_ClientHello_{
+			ClientHello: &pb.Control_ClientHello{
+				EgressWhitelist: a.params.EgressWhitelist,
+			},
+		},
+	}
+	if json, err := protojson.Marshal(hello); err != nil {
+		a.exitErr(fmt.Errorf("marshaling hello message failed: %w", err))
+		_ = conn.Close()
+		return
+	} else if err := wsstream.WriteText(string(json)); err != nil {
+		a.exitErr(fmt.Errorf("sending hello message failed: %w", err))
 		_ = conn.Close()
 		return
 	}
