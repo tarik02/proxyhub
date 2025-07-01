@@ -10,7 +10,6 @@ import (
 	"github.com/elazarl/goproxy"
 	"github.com/elazarl/goproxy/ext/auth"
 	"github.com/tarik02/proxyhub/logging"
-	"github.com/tarik02/proxyhub/pb"
 	"github.com/tarik02/proxyhub/util"
 	"go.uber.org/zap"
 )
@@ -104,20 +103,12 @@ loop:
 
 		case proxy := <-p.proxiesNew:
 			p.proxiesMu.Lock()
-			if _, ok := p.proxies[proxy.ID()]; ok {
-				p.proxiesMu.Unlock()
+			if oldProxy, ok := p.proxies[proxy.ID()]; ok {
 				go func() {
-					log.Warn("proxy already exists", zap.String("proxy_id", proxy.ID()))
-					_ = proxy.SendControlMessage(&pb.Control{
-						Message: &pb.Control_Disconnect_{
-							Disconnect: &pb.Control_Disconnect{
-								Reason: "proxy with the same ID already exists",
-							},
-						},
-					})
-					_ = proxy.Close()
+					log.Warn("proxy already exists, disconnecting it", zap.String("proxy_id", proxy.ID()))
+					_ = oldProxy.Handler().SendDisconnect(ctx, "another proxy with the same ID connected")
+					_ = oldProxy.Close()
 				}()
-				continue
 			}
 			p.proxies[proxy.ID()] = proxy
 			p.proxiesMu.Unlock()
@@ -160,13 +151,7 @@ loop:
 		go func() {
 			defer wg.Done()
 
-			if err := proxy.SendControlMessage(&pb.Control{
-				Message: &pb.Control_Disconnect_{
-					Disconnect: &pb.Control_Disconnect{
-						Reason: "proxyhub is shutting down",
-					},
-				},
-			}); err != nil {
+			if err := proxy.Handler().SendDisconnect(ctx, "proxyhub is shutting down"); err != nil {
 				log.Debug("proxy disconnect error", zap.String("proxy_id", proxy.ID()), zap.Error(err))
 			}
 
@@ -175,7 +160,9 @@ loop:
 		}()
 	}
 
+	log.Debug("waiting for all proxies to be closed")
 	wg.Wait()
+	log.Debug("all proxies closed")
 }
 
 func (p *Proxyhub) exitErr(err error) { // nolint:unused

@@ -11,22 +11,39 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tarik02/proxyhub/api"
 	"github.com/tarik02/proxyhub/logging"
 	"github.com/tarik02/proxyhub/proxyclient"
 	"github.com/tarik02/proxyhub/proxyclient/proxycatalog"
-	"github.com/tarik02/proxyhub/proxyclient/proxydialer"
+	"github.com/tarik02/proxyhub/proxyclient/proxytunnel"
 	"github.com/tarik02/proxyhub/socks"
 	"go.uber.org/zap"
 )
 
 var fEndpoint, fToken string
 var fProxyPort int
+var fWatch bool
 
 func getClientOptions() proxyclient.ClientOptions {
 	opts := proxyclient.NewClientOptions()
 	opts.Endpoint = fEndpoint
 	opts.Token = fToken
 	return opts
+}
+
+func printProxyInfo(p api.Proxy) {
+	fmt.Printf("ID: %s\n", p.ID)
+	fmt.Printf("Version: %s\n", p.Version)
+	fmt.Printf("Port: %d\n", p.Port)
+	fmt.Printf("Started: %s\n", time.Unix(p.Started, 0).Format(time.RFC3339))
+	if len(p.EgressWhitelist) > 0 {
+		fmt.Println("Egress Whitelist:")
+		for _, addr := range p.EgressWhitelist {
+			fmt.Printf("  - %s\n", addr)
+		}
+	} else {
+		fmt.Println("Egress Whitelist: none")
+	}
 }
 
 var rootCmd = &cobra.Command{
@@ -92,17 +109,36 @@ var listCmd = &cobra.Command{
 
 		log.Info("proxies list received")
 		for _, p := range initEvent {
-			os.Stdout.WriteString(fmt.Sprintf("ID: %s\n", p.ID))
-			os.Stdout.WriteString(fmt.Sprintf("Version: %s\n", p.Version))
-			os.Stdout.WriteString(fmt.Sprintf("Port: %d\n", p.Port))
-			os.Stdout.WriteString(fmt.Sprintf("Started: %s\n", time.Unix(p.Started, 0).Format(time.RFC3339)))
-			if len(p.EgressWhitelist) > 0 {
-				os.Stdout.WriteString("Egress Whitelist:\n")
-				for _, addr := range p.EgressWhitelist {
-					os.Stdout.WriteString(fmt.Sprintf("  - %s\n", addr))
+			printProxyInfo(p)
+		}
+
+		if fWatch {
+		loop:
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+
+				case <-client.CloseChan():
+					break loop
+
+				case event := <-client.Events():
+					switch event := event.(type) {
+					case proxycatalog.EventDisconnected:
+						log.Error("client disconnected", zap.Error(event.Err))
+
+					case proxycatalog.EventProxyAdd:
+						log.Info("proxy added", zap.String("id", event.ID))
+						printProxyInfo(event.Proxy)
+
+					case proxycatalog.EventProxyUpdate:
+						log.Info("proxy updated", zap.String("id", event.ID))
+						printProxyInfo(event.Proxy)
+
+					case proxycatalog.EventProxyDel:
+						log.Info("proxy removed", zap.String("id", string(event)))
+					}
 				}
-			} else {
-				os.Stdout.WriteString("Egress Whitelist: none\n")
 			}
 		}
 
@@ -126,10 +162,16 @@ var proxyCmd = &cobra.Command{
 		ctx := cmd.Context()
 		log := logging.FromContext(ctx)
 
-		proxyDialer := proxydialer.Dialer{
-			Options: getClientOptions(),
-			ID:      args[0],
+		proxyDialer, err := proxytunnel.New(ctx, proxytunnel.TunnelParams{
+			ClientOptions: getClientOptions(),
+			ProxyID:       args[0],
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create proxy tunnel: %w", err)
 		}
+		defer func() {
+			_ = proxyDialer.Close()
+		}()
 
 		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", fProxyPort))
 		if err != nil {
@@ -139,7 +181,7 @@ var proxyCmd = &cobra.Command{
 		log.Info("listening on", zap.String("address", listener.Addr().String()))
 
 		socksServer := socks.Socks5Server{
-			Dialer: &proxyDialer,
+			Dialer: proxyDialer,
 		}
 
 		go func() {
@@ -177,7 +219,9 @@ func init() {
 	rootCmd.MarkPersistentFlagRequired("endpoint")
 	rootCmd.MarkPersistentFlagRequired("token")
 
-	proxyCmd.PersistentFlags().IntVar(&fProxyPort, "proxy-port", 1080, "Port to listen on for SOCKS5 connections")
+	proxyCmd.Flags().IntVar(&fProxyPort, "proxy-port", 1080, "Port to listen on for SOCKS5 connections")
+
+	listCmd.Flags().BoolVarP(&fWatch, "watch", "w", false, "Watch for changes in the proxy list")
 
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(proxyCmd)

@@ -71,6 +71,9 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	}
 
 	var config Config
+	configChanged := make(chan struct{})
+	configMu := &sync.RWMutex{}
+
 	if c, err := unmarshalConfig(); err != nil {
 		return err
 	} else {
@@ -157,7 +160,12 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			log.Warn("error reloading config", zap.Error(err))
 		} else {
 			log.Info("config reloaded")
+
+			configMu.Lock()
 			config = c
+			close(configChanged)
+			configChanged = make(chan struct{})
+			configMu.Unlock()
 		}
 	})
 
@@ -189,7 +197,7 @@ loop:
 			log.Info("server message", zap.String("message", message))
 		}
 
-		wg.Add(2)
+		wg.Add(3)
 
 		go func() {
 			defer wg.Done()
@@ -202,6 +210,7 @@ loop:
 			case <-shutdownChan:
 			}
 
+			log.Debug("shutting down app")
 			_ = app.Close()
 		}()
 
@@ -210,6 +219,29 @@ loop:
 
 			if err := app.Wait(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, proxynode.ErrShutdown) {
 				log.Error("app error", zap.Error(err))
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+
+				case <-app.CloseChan():
+					return
+
+				case <-configChanged:
+					log.Debug("config changed, sending new egress whitelist")
+					if err := app.UpdateEgressWhitelist(ctx, config.EgressWhitelistString); err != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						log.Error("error updating egress whitelist", zap.Error(err))
+					}
+				}
 			}
 		}()
 

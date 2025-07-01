@@ -21,6 +21,20 @@ builds:
     goarch:
       - amd64
       - arm64
+      
+  - id: proxyclient
+    binary: proxyclient
+    main: ./cmd/proxyclient
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
   - id: proxynode
     binary: proxynode
     main: ./cmd/proxynode
@@ -56,6 +70,21 @@ archives:
     format_overrides:
       - goos: windows
         formats: zip
+        
+  - id: proxyclient
+    builds: [proxyclient]
+    formats: tar.gz
+    name_template: >-
+      proxyclient_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: zip
+
   - id: proxynode
     builds: [proxynode]
     formats: tar.gz
@@ -92,6 +121,20 @@ kos:
     build: proxyhub
     repositories:
       - ghcr.io/tarik02/proxyhub/proxyhub
+    tags:
+      - '{{ .Version }}'
+      - '{{ if eq .Branch "next" }}next{{end}}'
+      - '{{ if not .Prerelease }}stable{{end}}'
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    bare: true
+    
+  - id: proxyclient
+    base_image: mirror.gcr.io/library/alpine:3.21.2
+    build: proxyclient
+    repositories:
+      - ghcr.io/tarik02/proxyclient/proxyclient
     tags:
       - '{{ .Version }}'
       - '{{ if eq .Branch "next" }}next{{end}}'

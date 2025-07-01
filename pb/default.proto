@@ -1,0 +1,8 @@
+syntax = "proto3";
+package pb;
+
+option go_package = "github.com/tarik02/proxyhub/pb";
+
+message EgressWhitelist {
+    repeated string item = 1;
+}
