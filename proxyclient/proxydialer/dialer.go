@@ -39,7 +39,9 @@ func (p *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		stream := wsstream.New(conn)
 		a, b := net.Pipe()
 
-		go util.Copy2(ctx, stream, b)
+		go func() {
+			_, _, _ = util.Copy2(ctx, stream, b)
+		}()
 
 		return a, nil
 	}

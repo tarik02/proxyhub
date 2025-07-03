@@ -20,11 +20,11 @@ var ErrShutdown = errors.New("shutdown")
 var ErrUnauthorized = errors.New("unauthorized")
 var ErrNotFound = errors.New("not found")
 
-type ErrUnexpectedStatus struct {
+type UnexpectedStatusError struct {
 	StatusCode int
 }
 
-func (e *ErrUnexpectedStatus) Error() string {
+func (e *UnexpectedStatusError) Error() string {
 	return fmt.Sprintf("unexpected status code: %d", e.StatusCode)
 }
 
@@ -157,7 +157,7 @@ func (c *Client) connectAndProcess(ctx context.Context, opts proxyclient.ClientO
 
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", opts.Token))
 
-	res, err := opts.HTTP.Do(req)
+	res, err := opts.HTTP.Do(req) // nolint:bodyclose
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (c *Client) connectAndProcess(ctx context.Context, opts proxyclient.ClientO
 		break
 
 	default:
-		return &ErrUnexpectedStatus{StatusCode: res.StatusCode}
+		return &UnexpectedStatusError{StatusCode: res.StatusCode}
 	}
 
 	doneCh := make(chan struct{})

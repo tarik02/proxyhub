@@ -157,6 +157,7 @@ loop:
 				go p.OnConnection()
 
 				recv, sent, err := util.Copy2(ctx, stream, conn)
+				_ = err
 
 				go p.OnConnectionStats(recv, sent)
 			}()

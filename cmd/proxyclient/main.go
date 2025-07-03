@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"time"
 
+	goVersion "go.hein.dev/go-version"
+
 	"github.com/spf13/cobra"
 	"github.com/tarik02/proxyhub/api"
 	"github.com/tarik02/proxyhub/logging"
@@ -76,9 +78,11 @@ var listCmd = &cobra.Command{
 			log.Info("client is ready")
 
 		case ev := <-client.Events():
-			if ev, ok := ev.(proxycatalog.EventDisconnected); ok {
+			switch ev := ev.(type) {
+			case proxycatalog.EventDisconnected:
 				return fmt.Errorf("client disconnected: %w", ev.Err)
-			} else {
+
+			default:
 				return fmt.Errorf("unexpected event type: %s", reflect.TypeOf(ev).Name())
 			}
 		}
@@ -100,9 +104,11 @@ var listCmd = &cobra.Command{
 		case event := <-client.Events():
 			log.Debug("received event", zap.Any("event", event))
 
-			if event, ok := event.(proxycatalog.EventInit); ok {
+			switch event := event.(type) {
+			case proxycatalog.EventInit:
 				initEvent = event
-			} else {
+
+			default:
 				return fmt.Errorf("unexpected initial event type: %s", reflect.TypeOf(event).Name())
 			}
 		}
@@ -213,11 +219,21 @@ var proxyCmd = &cobra.Command{
 	},
 }
 
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Version will output the current build information",
+	Long:  ``,
+	Run: func(_ *cobra.Command, _ []string) {
+		resp := goVersion.FuncWithOutput(false, version, commit, date, goVersion.YAML)
+		fmt.Print(resp)
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&fEndpoint, "endpoint", "", "ProxyHub endpoint")
 	rootCmd.PersistentFlags().StringVar(&fToken, "token", "", "ProxyHub token")
-	rootCmd.MarkPersistentFlagRequired("endpoint")
-	rootCmd.MarkPersistentFlagRequired("token")
+	_ = rootCmd.MarkPersistentFlagRequired("endpoint")
+	_ = rootCmd.MarkPersistentFlagRequired("token")
 
 	proxyCmd.Flags().IntVar(&fProxyPort, "proxy-port", 1080, "Port to listen on for SOCKS5 connections")
 
@@ -225,6 +241,7 @@ func init() {
 
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(proxyCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 func main() {
@@ -235,5 +252,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
 	defer cancel()
 
-	rootCmd.ExecuteContext(ctx)
+	err := rootCmd.ExecuteContext(ctx)
+	if err != nil {
+		log.Fatal("command execution failed", zap.Error(err))
+	}
 }
