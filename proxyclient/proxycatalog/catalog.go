@@ -232,12 +232,12 @@ func (c *Client) connectAndProcess(ctx context.Context, opts proxyclient.ClientO
 			c.eventsCh <- data
 
 		case entevents.EventTypeDel:
-			var data EventProxyDel
+			var data string
 			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
 				return err
 			}
 
-			c.eventsCh <- data
+			c.eventsCh <- EventProxyDel(data)
 		}
 	}
 
