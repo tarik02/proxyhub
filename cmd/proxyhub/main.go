@@ -26,7 +26,6 @@ import (
 	"github.com/tarik02/proxyhub/util"
 	"github.com/tarik02/proxyhub/wsstream"
 	bearertoken "github.com/vence722/gin-middleware-bearer-token"
-	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 
 	ginzap "github.com/gin-contrib/zap"
@@ -235,36 +234,36 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 
 		proxy, err := proxyhub.NewProxy(ctx, id, session, func(proxy *proxyhub.Proxy) (proxyhub.ProxyHandler, error) {
-			if !semver.IsValid(clientVersion) || semver.Compare(clientVersion, "2.0.0") > 0 {
-				control1, err := session.OpenStream()
-				if err != nil {
-					return nil, fmt.Errorf("opening control stream failed: %w", err)
-				}
-
-				control2, err := session.OpenStream()
-				if err != nil {
-					return nil, fmt.Errorf("opening control stream failed: %w", err)
-				}
-
-				grpcServer := grpc.NewServer()
-
-				grpcClient, err := util.GrpcClientFromConn(control2)
-				if err != nil {
-					return nil, fmt.Errorf("grpc client from conn failed: %w", err)
-				}
-
-				grpcHandler := proxyhub.NewProxyHandlerGRPC(proxy, grpcClient, info)
-				pbhub.RegisterServiceServer(grpcServer, grpcHandler)
-
-				if err := util.GrpcServeOnConn(grpcServer, control1); err != nil {
-					return nil, fmt.Errorf("grpc server serve failed: %w", err)
-				}
-
-				return grpcHandler, nil
-			} else {
-				log.Warn("client version is too old, not expecting control stream", zap.String("clientVersion", clientVersion))
+			if proxyhub.IsLegacyClientVersion(clientVersion) {
+				log.Warn("client version is legacy, not expecting control stream", zap.String("clientVersion", clientVersion))
 				return proxyhub.NewProxyHandlerLegacy(proxy, info), nil
 			}
+
+			control1, err := session.OpenStream()
+			if err != nil {
+				return nil, fmt.Errorf("opening control stream failed: %w", err)
+			}
+
+			control2, err := session.OpenStream()
+			if err != nil {
+				return nil, fmt.Errorf("opening control stream failed: %w", err)
+			}
+
+			grpcServer := grpc.NewServer()
+
+			grpcClient, err := util.GrpcClientFromConn(control2)
+			if err != nil {
+				return nil, fmt.Errorf("grpc client from conn failed: %w", err)
+			}
+
+			grpcHandler := proxyhub.NewProxyHandlerGRPC(proxy, grpcClient, info)
+			pbhub.RegisterServiceServer(grpcServer, grpcHandler)
+
+			if err := util.GrpcServeOnConn(grpcServer, control1); err != nil {
+				return nil, fmt.Errorf("grpc server serve failed: %w", err)
+			}
+
+			return grpcHandler, nil
 		})
 		if err != nil {
 			log.Warn("creating proxy failed", zap.Error(err))
