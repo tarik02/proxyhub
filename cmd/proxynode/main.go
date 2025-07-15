@@ -178,7 +178,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 loop:
 	for {
 		app := proxynode.New(ctx, proxynode.Params{
-			Version:         version,
+			Version:         "2.0.0",
 			Endpoint:        config.Endpoint,
 			Username:        config.Username,
 			Password:        config.Password,
