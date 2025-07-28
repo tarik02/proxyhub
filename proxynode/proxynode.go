@@ -152,6 +152,9 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = conn.Close()
 		return
 	}
+	defer func() {
+		_ = control1.Close()
+	}()
 
 	control2, err := session.AcceptStreamWithContext(ctx)
 	if err != nil {
@@ -159,6 +162,9 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = conn.Close()
 		return
 	}
+	defer func() {
+		_ = control2.Close()
+	}()
 
 	grpcClient, err := util.GrpcClientFromConn(control1)
 	if err != nil {
@@ -166,6 +172,10 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = conn.Close()
 		return
 	}
+	defer func() {
+		log.Debug("closing gRPC client connection")
+		_ = grpcClient.Close()
+	}()
 
 	grpcServer := grpc.NewServer()
 
@@ -179,6 +189,11 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = conn.Close()
 		return
 	}
+
+	defer func() {
+		log.Debug("closing gRPC server")
+		grpcServer.Stop()
+	}()
 
 	phc := pbhub.NewServiceClient(grpcClient)
 	a.grpcClient = phc

@@ -243,11 +243,19 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			if err != nil {
 				return nil, fmt.Errorf("opening control stream failed: %w", err)
 			}
+			go func() {
+				<-proxy.CloseChan()
+				_ = control1.Close()
+			}()
 
 			control2, err := session.OpenStream()
 			if err != nil {
 				return nil, fmt.Errorf("opening control stream failed: %w", err)
 			}
+			go func() {
+				<-proxy.CloseChan()
+				_ = control2.Close()
+			}()
 
 			grpcServer := grpc.NewServer()
 
@@ -255,6 +263,11 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			if err != nil {
 				return nil, fmt.Errorf("grpc client from conn failed: %w", err)
 			}
+			go func() {
+				<-proxy.CloseChan()
+				log.Debug("closing gRPC client connection")
+				_ = grpcClient.Close()
+			}()
 
 			grpcHandler := proxyhub.NewProxyHandlerGRPC(proxy, grpcClient, info)
 			pbhub.RegisterServiceServer(grpcServer, grpcHandler)
@@ -262,6 +275,11 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			if err := util.GrpcServeOnConn(grpcServer, control1); err != nil {
 				return nil, fmt.Errorf("grpc server serve failed: %w", err)
 			}
+			go func() {
+				<-proxy.CloseChan()
+				log.Debug("closing gRPC server")
+				grpcServer.Stop()
+			}()
 
 			return grpcHandler, nil
 		})

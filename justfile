@@ -31,3 +31,6 @@ client *args:
 
 build-snapshot:
     goreleaser --clean --snapshot
+
+test-leaks:
+     go test -v -count=1 ./cmd/proxyhub
