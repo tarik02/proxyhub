@@ -44,6 +44,7 @@ require (
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/elazarl/goproxy/ext v0.0.0-20250305112401-088f758167d2
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
+	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-contrib/sse v1.0.0 // indirect
 	github.com/gin-contrib/zap v1.1.5
 	github.com/gin-gonic/gin v1.10.0
@@ -69,7 +70,7 @@ require (
 	go.hein.dev/go-version v0.1.0
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0
-	golang.org/x/arch v0.15.0 // indirect
+	golang.org/x/arch v0.16.0 // indirect
 	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/net v0.41.0
 	golang.org/x/sys v0.33.0 // indirect

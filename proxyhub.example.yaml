@@ -11,3 +11,7 @@ proxies:
 
 apiTokens:
   - token1
+
+profiling:
+  enabled: false
+  token: profiling-token

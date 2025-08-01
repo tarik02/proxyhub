@@ -13,6 +13,7 @@ import (
 
 	"github.com/elazarl/goproxy"
 	"github.com/fsnotify/fsnotify"
+	"github.com/gin-contrib/pprof"
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/mitchellh/mapstructure"
@@ -382,6 +383,11 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	r.GET("/api/proxies", tokenAuth, proxyEvents.ServeSnapshot)
 	r.GET("/api/proxies/live", tokenAuth, proxyEvents.ServeSSE)
+
+	if config.Profiling.Enabled {
+		g := r.Group("", bearertoken.MiddlewareWithStaticToken(config.Profiling.Token))
+		pprof.RouteRegister(g)
+	}
 
 	httpProxy := goproxy.NewProxyHttpServer()
 	httpProxy.NonproxyHandler = r
