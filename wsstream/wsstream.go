@@ -3,7 +3,6 @@ package wsstream
 import (
 	"errors"
 	"io"
-	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -13,30 +12,18 @@ type WSStream struct {
 
 	readIn, readOut   io.ReadCloser
 	writeIn, writeOut io.WriteCloser
-
-	writeTextChan       chan string
-	writeTextClosed     chan struct{}
-	writeTextClosedOnce sync.Once
-
-	HandleTextMessage func(io.Reader)
 }
 
 func New(conn *websocket.Conn) *WSStream {
 	readIn, writeIn := io.Pipe()
 	readOut, writeOut := io.Pipe()
 
-	writeBinaryChan := make(chan []byte)
-	writeTextChan := make(chan string)
-	writeTextClosed := make(chan struct{})
-
 	res := &WSStream{
-		conn:            conn,
-		readIn:          readIn,
-		readOut:         readOut,
-		writeIn:         writeIn,
-		writeOut:        writeOut,
-		writeTextChan:   writeTextChan,
-		writeTextClosed: writeTextClosed,
+		conn:     conn,
+		readIn:   readIn,
+		readOut:  readOut,
+		writeIn:  writeIn,
+		writeOut: writeOut,
 	}
 
 	go func() {
@@ -48,11 +35,6 @@ func New(conn *websocket.Conn) *WSStream {
 			}
 
 			switch t {
-			case websocket.TextMessage:
-				if res.HandleTextMessage != nil {
-					res.HandleTextMessage(r)
-				}
-
 			case websocket.BinaryMessage:
 				if _, err := io.Copy(writeIn, r); err != nil {
 					_ = writeIn.CloseWithError(err)
@@ -63,49 +45,16 @@ func New(conn *websocket.Conn) *WSStream {
 	}()
 
 	go func() {
-		defer close(writeBinaryChan)
-
+		b := make([]byte, 16*1024)
 		for {
-			b := make([]byte, 4096)
 			n, err := readOut.Read(b)
 			if err != nil {
 				_ = readOut.CloseWithError(err)
 				return
 			}
-			writeBinaryChan <- b[:n]
-		}
-	}()
-
-	go func() {
-		defer res.writeTextClosedOnce.Do(func() {
-			close(res.writeTextClosed)
-		})
-
-		for {
-			if writeBinaryChan == nil && writeTextChan == nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, b[:n]); err != nil {
+				_ = readOut.CloseWithError(err)
 				return
-			}
-
-			select {
-			case b, ok := <-writeBinaryChan:
-				if !ok {
-					writeBinaryChan = nil
-					continue
-				}
-				if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
-					_ = readOut.CloseWithError(err)
-					return
-				}
-
-			case s := <-writeTextChan:
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(s)); err != nil {
-					_ = readOut.CloseWithError(err)
-					return
-				}
-
-			case <-writeTextClosed:
-				writeTextChan = nil
-				writeTextClosed = nil
 			}
 		}
 	}()
@@ -121,19 +70,7 @@ func (p *WSStream) Write(b []byte) (n int, err error) {
 	return p.writeOut.Write(b)
 }
 
-func (p *WSStream) WriteText(s string) (err error) {
-	select {
-	case <-p.writeTextClosed:
-		return io.ErrClosedPipe
-	case p.writeTextChan <- s:
-		return nil
-	}
-}
-
 func (p *WSStream) Close() error {
-	p.writeTextClosedOnce.Do(func() {
-		close(p.writeTextClosed)
-	})
 	return errors.Join(
 		p.readIn.Close(),
 		p.writeOut.Close(),

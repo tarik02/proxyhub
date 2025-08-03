@@ -27,6 +27,11 @@ type Config struct {
 
 	Proxies   map[string]ConfigProxy
 	APITokens []string
+
+	Profiling struct {
+		Enabled bool
+		Token   string
+	}
 }
 
 func (c *Config) ApplyDefaults() {

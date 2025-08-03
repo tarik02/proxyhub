@@ -13,6 +13,7 @@ import (
 
 	"github.com/elazarl/goproxy"
 	"github.com/fsnotify/fsnotify"
+	"github.com/gin-contrib/pprof"
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/mitchellh/mapstructure"
@@ -21,10 +22,12 @@ import (
 	"github.com/tarik02/proxyhub/api"
 	"github.com/tarik02/proxyhub/entevents"
 	"github.com/tarik02/proxyhub/logging"
+	"github.com/tarik02/proxyhub/pb/pbhub"
 	"github.com/tarik02/proxyhub/proxyhub"
 	"github.com/tarik02/proxyhub/util"
 	"github.com/tarik02/proxyhub/wsstream"
 	bearertoken "github.com/vence722/gin-middleware-bearer-token"
+	"google.golang.org/grpc"
 
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
@@ -123,26 +126,33 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	hub.OnProxyAdded = func(p *proxyhub.Proxy) {
 		go func() {
 			if motd := config.Motd; motd != "" {
-				_ = p.SendMOTD(motd)
+				_ = p.Handler().SendMOTD(ctx, motd)
 			}
 		}()
 
 		go func() {
-			if err := proxyEvents.Add(ctx, p.ID(), api.Proxy{
-				ID:      p.ID(),
-				Version: p.Version(),
-				Port:    p.Port(),
-				Started: p.Started().Unix(),
-			}); err != nil {
+			info, infoChanged := p.Handler().Info()
+			if err := proxyEvents.Add(ctx, p.ID(), info); err != nil {
 				log.Debug("proxyevents.Add failed", zap.Error(err))
 			}
-		}()
-	}
 
-	hub.OnProxyRemoved = func(p *proxyhub.Proxy) {
-		go func() {
-			if err := proxyEvents.Del(ctx, p.ID()); err != nil {
-				log.Debug("proxyevents.Del failed", zap.Error(err))
+			for {
+				select {
+				case <-ctx.Done():
+					return
+
+				case <-p.CloseChan():
+					if err := proxyEvents.Del(ctx, p.ID()); err != nil {
+						log.Debug("proxyevents.Del failed", zap.Error(err))
+					}
+					return
+
+				case <-infoChanged:
+					info, infoChanged = p.Handler().Info()
+					if err := proxyEvents.Update(ctx, "update", p.ID(), info, info); err != nil {
+						log.Debug("proxyevents.Update failed", zap.Error(err))
+					}
+				}
 			}
 		}()
 	}
@@ -205,26 +215,79 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			log.Warn("upgrade failed", zap.Error(err))
 			return
 		}
-
-		var lc net.ListenConfig
-		listener, err := lc.Listen(ctx, "tcp", "0.0.0.0:0")
-		if err != nil {
-			log.Warn("listen failed", zap.Error(err))
+		defer func() {
 			_ = conn.Close()
-			return
-		}
-
-		log.Debug("created listener for proxy", zap.String("proxyId", id), zap.String("addr", listener.Addr().String()))
+		}()
 
 		wsstream := wsstream.New(conn)
-		session, err := yamux.Client(wsstream, yamux.DefaultConfig())
+		yamuxConfig := yamux.DefaultConfig()
+		logging.ConfigureYamuxLogger(yamuxConfig, log)
+		session, err := yamux.Client(wsstream, yamuxConfig)
 		if err != nil {
-			_ = listener.Close()
-			_ = conn.Close()
+			log.Warn("yamux client failed", zap.Error(err))
 			return
 		}
 
-		proxy := proxyhub.NewProxy(ctx, id, clientVersion, listener, wsstream, session)
+		info := api.Proxy{
+			ID:      id,
+			Version: clientVersion,
+			Started: time.Now().Unix(),
+		}
+
+		proxy, err := proxyhub.NewProxy(ctx, id, session, func(proxy *proxyhub.Proxy) (proxyhub.ProxyHandler, error) {
+			if proxyhub.IsLegacyClientVersion(clientVersion) {
+				log.Warn("client version is legacy, not expecting control stream", zap.String("clientVersion", clientVersion))
+				return proxyhub.NewProxyHandlerLegacy(proxy, info), nil
+			}
+
+			control1, err := session.OpenStream()
+			if err != nil {
+				return nil, fmt.Errorf("opening control stream failed: %w", err)
+			}
+			go func() {
+				<-proxy.CloseChan()
+				_ = control1.Close()
+			}()
+
+			control2, err := session.OpenStream()
+			if err != nil {
+				return nil, fmt.Errorf("opening control stream failed: %w", err)
+			}
+			go func() {
+				<-proxy.CloseChan()
+				_ = control2.Close()
+			}()
+
+			grpcServer := grpc.NewServer()
+
+			grpcClient, err := util.GrpcClientFromConn(control2)
+			if err != nil {
+				return nil, fmt.Errorf("grpc client from conn failed: %w", err)
+			}
+			go func() {
+				<-proxy.CloseChan()
+				log.Debug("closing gRPC client connection")
+				_ = grpcClient.Close()
+			}()
+
+			grpcHandler := proxyhub.NewProxyHandlerGRPC(proxy, grpcClient, info)
+			pbhub.RegisterServiceServer(grpcServer, grpcHandler)
+
+			if err := util.GrpcServeOnConn(grpcServer, control1); err != nil {
+				return nil, fmt.Errorf("grpc server serve failed: %w", err)
+			}
+			go func() {
+				<-proxy.CloseChan()
+				log.Debug("closing gRPC server")
+				grpcServer.Stop()
+			}()
+
+			return grpcHandler, nil
+		})
+		if err != nil {
+			log.Warn("creating proxy failed", zap.Error(err))
+			return
+		}
 
 		proxy.OnConnection = func() {
 			proxyConnsTotalMetric.WithLabelValues(proxy.ID()).Inc()
@@ -238,6 +301,8 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 			_ = proxy.Close()
 			return
 		}
+
+		_ = proxy.Wait(ctx)
 	})
 
 	r.GET("/socks/:id", tokenAuth, func(c *gin.Context) {
@@ -266,8 +331,63 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 	})
 
+	r.GET("/proxy/:id/tunnel", tokenAuth, func(c *gin.Context) {
+		id := c.Param("id")
+
+		proxy := hub.GetProxyByID(id)
+		if proxy == nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "proxy not found"})
+			return
+		}
+
+		var upgrader = websocket.Upgrader{}
+
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			log.Warn("upgrade failed", zap.Error(err))
+			return
+		}
+
+		wsstream := wsstream.New(conn)
+		yamuxConfig := yamux.DefaultConfig()
+		logging.ConfigureYamuxLogger(yamuxConfig, log)
+		session, err := yamux.Client(wsstream, yamuxConfig)
+		if err != nil {
+			log.Warn("yamux client failed", zap.Error(err))
+			return
+		}
+
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		for {
+			stream, err := session.AcceptStreamWithContext(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, proxyhub.ErrShutdown) {
+					log.Debug("session closed or shutdown", zap.Error(err))
+					return
+				}
+				log.Warn("accept stream failed", zap.Error(err))
+				return
+			}
+
+			log.Debug("accepted stream", zap.String("id", id))
+
+			if err := proxy.QueueConn(ctx, stream); err != nil {
+				log.Warn("handle conn failed", zap.Error(err))
+				return
+			}
+		}
+	})
+
 	r.GET("/api/proxies", tokenAuth, proxyEvents.ServeSnapshot)
 	r.GET("/api/proxies/live", tokenAuth, proxyEvents.ServeSSE)
+
+	if config.Profiling.Enabled {
+		g := r.Group("", bearertoken.MiddlewareWithStaticToken(config.Profiling.Token))
+		pprof.RouteRegister(g)
+	}
 
 	httpProxy := goproxy.NewProxyHttpServer()
 	httpProxy.NonproxyHandler = r

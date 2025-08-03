@@ -1,0 +1,33 @@
+syntax = "proto3";
+package pb.pbhub;
+
+option go_package = "github.com/tarik02/proxyhub/pb/pbhub";
+
+import "pb/default.proto";
+
+message HelloRequest {
+    pb.EgressWhitelist egressWhitelist = 1;
+}
+
+message HelloResponse {
+}
+
+message DisconnectRequest {
+    string reason = 1;
+}
+
+message DisconnectResponse {
+}
+
+message UpdatedEgressWhitelistRequest {
+    pb.EgressWhitelist egressWhitelist = 1;
+}
+
+message UpdatedEgressWhitelistResponse {
+}
+
+service Service {
+    rpc Hello (HelloRequest) returns (HelloResponse);
+    rpc Disconnect (DisconnectRequest) returns (DisconnectResponse);
+    rpc UpdatedEgressWhitelist (UpdatedEgressWhitelistRequest) returns (UpdatedEgressWhitelistResponse);
+}

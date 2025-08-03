@@ -1,4 +1,4 @@
-package socks
+package util
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-func dial(ctx context.Context, d proxy.Dialer, network, address string) (net.Conn, error) {
+func DialProxyContext(ctx context.Context, d proxy.Dialer, network, address string) (net.Conn, error) {
 	if d, ok := d.(proxy.ContextDialer); ok {
 		return d.DialContext(ctx, network, address)
 	}

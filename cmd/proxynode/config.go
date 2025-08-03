@@ -12,5 +12,6 @@ type Config struct {
 	Username string
 	Password string
 
-	EgressWhitelist []glob.Glob
+	EgressWhitelist       []glob.Glob
+	EgressWhitelistString []string `mapstructure:"egressWhitelist"`
 }

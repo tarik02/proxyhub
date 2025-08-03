@@ -2,29 +2,22 @@ package proxyhub
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/hashicorp/yamux"
 	"github.com/tarik02/proxyhub/logging"
-	"github.com/tarik02/proxyhub/pb"
-	"github.com/tarik02/proxyhub/wsstream"
+	"github.com/tarik02/proxyhub/util"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type Proxy struct {
-	id      string
-	version string
-	started time.Time
+	id string
 
-	listener net.Listener
-	ws       *wsstream.WSStream
-	session  *yamux.Session
+	session *yamux.Session
+	handler ProxyHandler
 
 	connsChan chan io.ReadWriteCloser
 
@@ -34,103 +27,47 @@ type Proxy struct {
 	shutdownErr   error
 	shutdownErrMu sync.Mutex
 
-	acceptConnsDoneCh chan struct{}
-	runDoneCh         chan struct{}
-	closedCh          chan struct{}
+	runDoneCh chan struct{}
+	closedCh  chan struct{}
 
 	OnConnection      func()
 	OnConnectionStats func(recv, sent int64)
 }
 
-func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
-	log := logging.FromContext(ctx, zap.String("proxy_id", id)).Named("proxy")
-
+func NewProxy(ctx context.Context, id string, session *yamux.Session, handlerFactory func(*Proxy) (ProxyHandler, error)) (*Proxy, error) {
 	res := &Proxy{
-		id:      id,
-		version: version,
-		started: time.Now(),
+		id: id,
 
-		listener: listener,
-		ws:       ws,
-		session:  session,
+		session: session,
 
 		connsChan: make(chan io.ReadWriteCloser),
 
-		shutdownCh:        make(chan struct{}),
-		acceptConnsDoneCh: make(chan struct{}),
-		runDoneCh:         make(chan struct{}),
-		closedCh:          make(chan struct{}),
+		shutdownCh: make(chan struct{}),
+		runDoneCh:  make(chan struct{}),
+		closedCh:   make(chan struct{}),
 
 		OnConnection:      func() {},
 		OnConnectionStats: func(recv, sent int64) {},
 	}
 
-	go res.acceptConns(ctx)
-	go res.run(ctx)
-
-	res.ws.HandleTextMessage = func(r io.Reader) {
-		b, err := io.ReadAll(r)
-		if err != nil {
-			log.Warn("reading text message failed", zap.Error(err))
-			return
-		}
-
-		msg := &pb.Control{}
-		if err := protojson.Unmarshal(b, msg); err != nil {
-			log.Warn("unmarshaling message failed", zap.Error(err))
-			return
-		}
-
-		switch msg.Message.(type) {
-		case *pb.Control_Disconnect_:
-			res.exitErr(fmt.Errorf("client initiated disconnect: %s", msg.GetDisconnect().Reason))
-
-		default:
-			log.Warn("invalid message", zap.Any("message", msg))
-		}
+	handler, err := handlerFactory(res)
+	if err != nil {
+		return nil, err
 	}
 
-	return res
+	res.handler = handler
+
+	go res.run(ctx)
+
+	return res, nil
 }
 
 func (p *Proxy) ID() string {
 	return p.id
 }
 
-func (p *Proxy) Version() string {
-	return p.version
-}
-
-func (p *Proxy) Started() time.Time {
-	return p.started
-}
-
-func (p *Proxy) Port() int {
-	if p.listener != nil {
-		if addr, ok := p.listener.Addr().(*net.TCPAddr); ok {
-			return addr.Port
-		}
-	}
-	return 0
-}
-
-func (p *Proxy) SendMOTD(message string) error {
-	return p.SendControlMessage(&pb.Control{
-		Message: &pb.Control_Motd{
-			Motd: &pb.Control_MOTD{
-				Message: message,
-			},
-		},
-	})
-}
-
-func (p *Proxy) SendControlMessage(msg *pb.Control) error {
-	buf, err := protojson.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	return p.ws.WriteText(string(buf))
+func (p *Proxy) Handler() ProxyHandler {
+	return p.handler
 }
 
 func (p *Proxy) Wait(ctx context.Context) error {
@@ -138,12 +75,16 @@ func (p *Proxy) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 
-	case <-p.closedCh:
+	case <-p.runDoneCh:
 		return p.shutdownErr
 	}
 }
 
 func (p *Proxy) Close() error {
+	return p.CloseWithError(ErrShutdown)
+}
+
+func (p *Proxy) CloseWithError(err error) error {
 	p.shutdownMu.Lock()
 	defer p.shutdownMu.Unlock()
 
@@ -154,13 +95,12 @@ func (p *Proxy) Close() error {
 
 	p.shutdownErrMu.Lock()
 	if p.shutdownErr == nil {
-		p.shutdownErr = ErrShutdown
+		p.shutdownErr = err
 	}
 	p.shutdownErrMu.Unlock()
 
 	close(p.shutdownCh)
 
-	<-p.acceptConnsDoneCh
 	<-p.runDoneCh
 
 	close(p.closedCh)
@@ -172,49 +112,29 @@ func (p *Proxy) CloseChan() <-chan struct{} {
 	return p.shutdownCh
 }
 
-func (p *Proxy) acceptConns(ctx context.Context) {
-	defer close(p.acceptConnsDoneCh)
-
-	log := logging.FromContext(ctx, zap.String("proxy_id", p.id)).Named("proxy")
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-p.shutdownCh:
-		}
-
-		log.Debug("closing listener")
-		_ = p.listener.Close()
-	}()
-
-	log.Debug("accepting connections")
-	for {
-		conn, err := p.listener.Accept()
-		if err != nil {
-			log.Debug("accept failed", zap.Error(err))
-			p.exitErr(err)
-			break
-		}
-
-		if err := p.QueueConn(ctx, conn); err != nil {
-			if err := conn.Close(); err != nil {
-				log.Warn("close failed", zap.Error(err))
-			}
-		}
-	}
-}
-
 func (p *Proxy) run(ctx context.Context) {
 	defer close(p.runDoneCh)
 
 	log := logging.FromContext(ctx, zap.String("proxy_id", p.id)).Named("proxy")
 	wg := sync.WaitGroup{}
 
+	log.Debug("waiting for handler to be ready")
+	select {
+	case <-ctx.Done():
+		break
+
+	case <-p.shutdownCh:
+		break
+
+	case <-p.handler.Ready():
+		log.Debug("handler is ready")
+	}
+
 loop:
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			break loop
 
 		case <-p.shutdownCh:
 			break loop
@@ -227,76 +147,59 @@ loop:
 			go func() {
 				defer wg.Done()
 
-				go p.OnConnection()
-
 				stream, err := p.session.OpenStream()
 				if err != nil {
+					log.Warn("failed to open stream for connection", zap.Error(err))
 					_ = conn.Close()
 					return
 				}
 
-				ch1, ch2 := make(chan struct{}), make(chan struct{})
+				go p.OnConnection()
 
-				recv, sent := int64(0), int64(0)
-
-				wg := sync.WaitGroup{}
-				wg.Add(2)
-
-				go func() {
-					defer wg.Done()
-					defer close(ch1)
-					bytes, err2 := io.Copy(stream, conn)
-					sent += bytes
-					if err2 != nil {
-						err = err2
-					}
-				}()
-
-				go func() {
-					defer wg.Done()
-					defer close(ch2)
-					bytes, err2 := io.Copy(conn, stream)
-					recv += bytes
-					if err2 != nil {
-						err = err2
-					}
-				}()
-
-				select {
-				case <-ctx.Done():
-					_ = conn.Close()
-
-				case <-ch1:
-					_ = conn.Close()
-
-				case <-ch2:
-					_ = conn.Close()
-				}
-
-				wg.Wait()
+				recv, sent, err := util.Copy2(ctx, stream, conn)
+				_ = err
 
 				go p.OnConnectionStats(recv, sent)
 			}()
 		}
 	}
 
-	log.Debug("waiting for connections to finish")
-	wg.Wait()
-	log.Debug("all connections finished")
+	select {
+	case <-ctx.Done():
+		log.Debug("context done, exiting run loop")
 
-	log.Debug("closing session")
-	if err := p.session.Close(); err != nil {
-		log.Debug("session close failed", zap.Error(err))
-		p.exitErr(err)
-	} else {
-		log.Debug("session closed")
+	default:
+		log.Debug("waiting for connections to finish")
+
+		wgDoneCh := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(wgDoneCh)
+		}()
+
+		select {
+		case <-ctx.Done():
+			log.Debug("context done while waiting for connections, exiting run loop")
+
+		case <-wgDoneCh:
+			log.Debug("all connections finished")
+		}
 	}
 
-	if err := p.ws.Close(); err != nil {
-		log.Debug("ws close failed", zap.Error(err))
-		p.exitErr(err)
-	} else {
-		log.Debug("ws closed")
+	go func() {
+		log.Debug("closing session")
+		if err := p.session.Close(); err != nil {
+			log.Debug("session close failed", zap.Error(err))
+			p.exitErr(err)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Debug("context done, exiting run loop")
+
+	case <-p.session.CloseChan():
+		log.Debug("session closed, exiting run loop")
 	}
 }
 
