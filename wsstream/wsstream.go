@@ -18,8 +18,6 @@ func New(conn *websocket.Conn) *WSStream {
 	readIn, writeIn := io.Pipe()
 	readOut, writeOut := io.Pipe()
 
-	writeBinaryChan := make(chan []byte)
-
 	res := &WSStream{
 		conn:     conn,
 		readIn:   readIn,
@@ -47,22 +45,14 @@ func New(conn *websocket.Conn) *WSStream {
 	}()
 
 	go func() {
-		defer close(writeBinaryChan)
-
+		b := make([]byte, 16*1024)
 		for {
-			b := make([]byte, 4096)
 			n, err := readOut.Read(b)
 			if err != nil {
 				_ = readOut.CloseWithError(err)
 				return
 			}
-			writeBinaryChan <- b[:n]
-		}
-	}()
-
-	go func() {
-		for b := range writeBinaryChan {
-			if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, b[:n]); err != nil {
 				_ = readOut.CloseWithError(err)
 				return
 			}
