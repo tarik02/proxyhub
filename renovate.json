@@ -3,14 +3,14 @@
   "extends": [
     "config:recommended"
   ],
-  "baseBranches": [
+  "baseBranchPatterns": [
     "next"
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": [
-        "^\\.github/workflows/[^/]+\\.ya?ml$"
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+?)(?: depName=(?<depName>.+?))? packageName=(?<packageName>.+?)(?: versioning=(?<versioning>[a-z-]+?))?\\s+\\S+: (?<currentValue>.+?)\\s"
