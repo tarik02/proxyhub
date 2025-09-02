@@ -132,6 +132,10 @@ loop:
 
 		case proxy := <-p.proxiesRemove:
 			p.proxiesMu.Lock()
+			if p.proxies[proxy.ID()] != proxy {
+				p.proxiesMu.Unlock()
+				continue loop
+			}
 			delete(p.proxies, proxy.ID())
 			p.proxiesMu.Unlock()
 
