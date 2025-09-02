@@ -112,6 +112,7 @@ loop:
 					break
 				}
 
+				delete(p.proxies, proxy.ID())
 				p.proxiesMu.Unlock()
 
 				log.Warn("proxy already exists, disconnecting it", zap.String("proxy_id", proxy.ID()))
