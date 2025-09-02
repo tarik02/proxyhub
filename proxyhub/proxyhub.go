@@ -102,16 +102,22 @@ loop:
 			break loop
 
 		case proxy := <-p.proxiesNew:
-			p.proxiesMu.Lock()
-			if oldProxy, ok := p.proxies[proxy.ID()]; ok {
-				go func() {
-					log.Warn("proxy already exists, disconnecting it", zap.String("proxy_id", proxy.ID()))
-					_ = oldProxy.Handler().SendDisconnect(ctx, "another proxy with the same ID connected")
-					_ = oldProxy.Close()
-				}()
+			for {
+				p.proxiesMu.Lock()
+				oldProxy, ok := p.proxies[proxy.ID()]
+
+				if !ok {
+					p.proxies[proxy.ID()] = proxy
+					p.proxiesMu.Unlock()
+					break
+				}
+
+				p.proxiesMu.Unlock()
+
+				log.Warn("proxy already exists, disconnecting it", zap.String("proxy_id", proxy.ID()))
+				_ = oldProxy.Handler().SendDisconnect(ctx, "another proxy with the same ID connected")
+				_ = oldProxy.Close()
 			}
-			p.proxies[proxy.ID()] = proxy
-			p.proxiesMu.Unlock()
 
 			log.Info("proxy added", zap.String("proxy_id", proxy.ID()))
 
