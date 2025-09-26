@@ -9,6 +9,7 @@ import (
 	"net"
 
 	"github.com/tarik02/proxyhub/logging"
+	"github.com/tarik02/proxyhub/util"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )
@@ -29,12 +30,16 @@ type Socks5Server struct {
 	ValidateTarget func(ctx context.Context, target string) error
 }
 
-func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) error {
+func (s *Socks5Server) ServeConn(ctx context.Context, conn net.Conn) error {
+	defer func() {
+		_ = conn.Close()
+	}()
+
 	log := logging.FromContext(ctx)
 
 	buf := make([]byte, 16*1024)
 
-	if _, err := io.ReadFull(r, buf[:2]); err != nil {
+	if _, err := io.ReadFull(conn, buf[:2]); err != nil {
 		return err
 	}
 
@@ -46,19 +51,19 @@ func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) e
 
 	log.Debug("auth methods count", zap.Int("count", authMethodsCount))
 
-	if _, err := io.ReadFull(r, buf[:authMethodsCount]); err != nil {
+	if _, err := io.ReadFull(conn, buf[:authMethodsCount]); err != nil {
 		return err
 	}
 
 	log.Debug("auth methods read done")
 
-	if _, err := w.Write([]byte{version, 0x00}); err != nil {
+	if _, err := conn.Write([]byte{version, 0x00}); err != nil {
 		return err
 	}
 
 	log.Debug("reading header")
 
-	if _, err := io.ReadFull(r, buf[:5]); err != nil {
+	if _, err := io.ReadFull(conn, buf[:5]); err != nil {
 		return err
 	}
 
@@ -77,7 +82,7 @@ func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) e
 	}
 
 	l := int(buf[4])
-	if _, err := io.ReadFull(r, buf[:l+2]); err != nil {
+	if _, err := io.ReadFull(conn, buf[:l+2]); err != nil {
 		return err
 	}
 
@@ -87,67 +92,26 @@ func (s *Socks5Server) Run(ctx context.Context, r io.Reader, w io.WriteCloser) e
 
 	if s.ValidateTarget != nil {
 		if err := s.ValidateTarget(ctx, target); err != nil {
-			_, _ = w.Write([]byte{version, codeFailure, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01})
+			_, _ = conn.Write([]byte{version, codeFailure, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01})
 			return err
 		}
 	}
 
 	log.Debug("connecting", zap.String("target", target))
 
-	conn, err := dial(ctx, s.Dialer, "tcp", target)
+	upstream, err := util.DialProxyContext(ctx, s.Dialer, "tcp", target)
 	if err != nil {
-		_, _ = w.Write([]byte{version, codeFailure, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01})
+		_, _ = conn.Write([]byte{version, codeFailure, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01})
 		return err
 	}
-	defer conn.Close()
+	defer upstream.Close()
 
-	if _, err := w.Write([]byte{version, codeSuccess, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}); err != nil {
+	if _, err := conn.Write([]byte{version, codeSuccess, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}); err != nil {
 		return err
 	}
 
 	log.Debug("connected", zap.String("target", target))
+	_, _, err = util.Copy2(ctx, upstream, conn)
 
-	doneConnChan := make(chan struct{})
-	doneWriterChan := make(chan struct{})
-
-	go func() {
-		defer close(doneConnChan)
-		_, err := io.Copy(conn, r)
-		log.Debug("downstream connection closed", zap.Error(err))
-	}()
-
-	go func() {
-		defer close(doneWriterChan)
-		_, err := io.Copy(w, conn)
-		log.Debug("upstream connection closed", zap.Error(err))
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-			_ = w.Close()
-			if doneConnChan != nil {
-				<-doneConnChan
-			}
-			if doneWriterChan != nil {
-				<-doneWriterChan
-			}
-			return ctx.Err()
-
-		case <-doneConnChan:
-			_ = conn.Close()
-			doneConnChan = nil
-
-		case <-doneWriterChan:
-			_ = w.Close()
-			doneWriterChan = nil
-		}
-
-		if doneConnChan == nil && doneWriterChan == nil {
-			break
-		}
-	}
-
-	return nil
+	return err
 }
