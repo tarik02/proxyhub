@@ -3,6 +3,8 @@
   "extends": [
     "config:recommended"
   ],
+  "prConcurrentLimit": null,
+  "prHourlyLimit": null,
   "baseBranchPatterns": [
     "next"
   ],
