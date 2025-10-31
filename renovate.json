@@ -17,6 +17,15 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+?)(?: depName=(?<depName>.+?))? packageName=(?<packageName>.+?)(?: versioning=(?<versioning>[a-z-]+?))?\\s+\\S+: (?<currentValue>.+?)\\s"
       ]
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^go\\.mod$"],
+      "matchStrings": [
+        "^go (?<currentValue>\\d+\\.\\d+\\.\\d+)$"
+      ],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go"
     }
   ]
 }
