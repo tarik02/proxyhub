@@ -22,7 +22,7 @@
       "customType": "regex",
       "fileMatch": ["^go\\.mod$"],
       "matchStrings": [
-        "toolchain go(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+        "^go (?<currentValue>\\d+\\.\\d+\\.\\d+)$"
       ],
       "datasourceTemplate": "golang-version",
       "depNameTemplate": "go"
