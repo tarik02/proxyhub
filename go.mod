@@ -8,7 +8,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/spf13/cobra v1.10.1
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/thessem/zap-prettyconsole v0.5.2
 	github.com/tmaxmax/go-sse v0.11.0
