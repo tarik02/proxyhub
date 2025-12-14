@@ -20,12 +20,16 @@
     },
     {
       "customType": "regex",
-      "fileMatch": ["^go\\.mod$"],
-      "matchStrings": [
-        "^go (?<currentValue>\\d+\\.\\d+\\.\\d+)$"
+      "managerFilePatterns": [
+        "/^go\\.mod$/"
       ],
+      "matchStrings": [
+        "go (?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)"
+      ],
+      "depTypeTemplate": "golang",
       "datasourceTemplate": "golang-version",
-      "depNameTemplate": "go"
+      "depNameTemplate": "go",
+      "packageNameTemplate": "go"
     }
   ]
 }
