@@ -1,8 +1,8 @@
 [tools]
-go = "1.25.3"
-golangci-lint = "2.6.0"
+go = "1.25.5"
+golangci-lint = "2.7.2"
 goreleaser = "2.6.1"
-just = "1.43.0"
-protoc = "33.0"
+just = "1.45.0"
+protoc = "33.2"
 protoc-gen-go = "1.36.4"
 protoc-gen-go-grpc = "1.5.1"

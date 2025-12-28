@@ -1,6 +1,6 @@
 module github.com/tarik02/proxyhub
 
-go 1.25.3
+go 1.25.5
 
 require (
 	github.com/elazarl/goproxy v1.7.2
@@ -8,13 +8,13 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/spf13/cobra v1.10.1
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/thessem/zap-prettyconsole v0.5.2
+	github.com/thessem/zap-prettyconsole v0.6.0
 	github.com/tmaxmax/go-sse v0.11.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/mod v0.29.0
-	google.golang.org/grpc v1.76.0
+	golang.org/x/mod v0.31.0
+	google.golang.org/grpc v1.78.0
 )
 
 require (
@@ -38,9 +38,9 @@ require (
 	go.uber.org/mock v0.5.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/tools v0.37.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250804133106-a7a43d27e69b // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/tools v0.39.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	sigs.k8s.io/yaml v1.1.0 // indirect
 )
@@ -50,11 +50,11 @@ require (
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/elazarl/goproxy/ext v0.0.0-20251021114236-29d155006e8f
+	github.com/elazarl/goproxy/ext v0.0.0-20251122212328-fad3713f1715
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-contrib/sse v1.1.0 // indirect
-	github.com/gin-contrib/zap v1.1.5
+	github.com/gin-contrib/zap v1.1.6
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
@@ -77,11 +77,11 @@ require (
 	github.com/vence722/gin-middleware-bearer-token v1.1.0
 	go.hein.dev/go-version v0.1.0
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.27.1
 	golang.org/x/arch v0.20.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
-	golang.org/x/net v0.46.0
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
-	google.golang.org/protobuf v1.36.10
+	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/net v0.48.0
+	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
+	google.golang.org/protobuf v1.36.11
 )
