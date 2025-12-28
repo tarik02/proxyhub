@@ -235,11 +235,6 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 
 		proxy, err := proxyhub.NewProxy(ctx, id, session, func(proxy *proxyhub.Proxy) (proxyhub.ProxyHandler, error) {
-			if proxyhub.IsLegacyClientVersion(clientVersion) {
-				log.Warn("client version is legacy, not expecting control stream", zap.String("clientVersion", clientVersion))
-				return proxyhub.NewProxyHandlerLegacy(proxy, info), nil
-			}
-
 			control1, err := session.OpenStream()
 			if err != nil {
 				return nil, fmt.Errorf("opening control stream failed: %w", err)
