@@ -10,7 +10,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/thessem/zap-prettyconsole v0.5.2
+	github.com/thessem/zap-prettyconsole v0.6.0
 	github.com/tmaxmax/go-sse v0.11.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.31.0
