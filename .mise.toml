@@ -1,6 +1,6 @@
 [tools]
 go = "1.25.5"
-golangci-lint = "2.7.2"
+golangci-lint = "2.11.4"
 goreleaser = "2.6.1"
 just = "1.45.0"
 protoc = "33.2"
