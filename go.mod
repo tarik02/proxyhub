@@ -13,7 +13,7 @@ require (
 	github.com/thessem/zap-prettyconsole v0.6.0
 	github.com/tmaxmax/go-sse v0.11.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/mod v0.33.0
+	golang.org/x/mod v0.34.0
 	google.golang.org/grpc v1.79.3
 )
 
