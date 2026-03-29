@@ -35,6 +35,8 @@ github.com/dgrijalva/jwt-go v3.2.0+incompatible/go.mod h1:E3ru+11k8xSBh+hMPgOLZm
 github.com/dgryski/go-sip13 v0.0.0-20181026042036-e10d5fee7954/go.mod h1:vAd38F8PWV+bWy6jNmig1y/TA+kYO4g3RSRF0IAv0no=
 github.com/elazarl/goproxy v1.7.2 h1:Y2o6urb7Eule09PjlhQRGNsqRfPmYI3KKQLFpCAV3+o=
 github.com/elazarl/goproxy v1.7.2/go.mod h1:82vkLNir0ALaW14Rc399OTTjyNREgmdL2cVoIbS6XaE=
+github.com/elazarl/goproxy v1.8.3 h1:XhiZpzW0NvsGOqSv/F3v4+1F29842yYaJNN+In5Fnuc=
+github.com/elazarl/goproxy v1.8.3/go.mod h1:b5xm6W48AUHNpRTCvlnd0YVh+JafCCtsLsJZvvNTz+E=
 github.com/elazarl/goproxy/ext v0.0.0-20251021114236-29d155006e8f h1:y3XDPyxn1Y29iCRy9sRSBUAQDb9QO5FsBoNULWtE5pI=
 github.com/elazarl/goproxy/ext v0.0.0-20251021114236-29d155006e8f/go.mod h1:fx75f98CST5mRiLRu5fYLHj5hx641zC7dcN+cT88gmo=
 github.com/elazarl/goproxy/ext v0.0.0-20251122212328-fad3713f1715 h1:qL0DOadaXRA3dDQn2Cd+UtAAa8TTQUCPe9XN4Qyo1Gg=
