@@ -2,7 +2,7 @@
 go = "1.26.1"
 golangci-lint = "2.11.4"
 goreleaser = "2.6.1"
-just = "1.48.1"
+just = "1.49.0"
 protoc = "34.1"
 protoc-gen-go = "1.36.4"
 protoc-gen-go-grpc = "1.5.1"
