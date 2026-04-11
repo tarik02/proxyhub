@@ -26,6 +26,10 @@ type Params struct {
 }
 
 var ErrShutdown = errors.New("shutdown")
+var ErrDialFailed = errors.New("websocket dial failed")
+var ErrYamuxServerFailed = errors.New("yamux server creation failed")
+var ErrServerDisconnect = errors.New("server initiated disconnect")
+var ErrAcceptStreamFailed = errors.New("accept stream failed")
 
 type Proxynode struct {
 	params Params
@@ -39,6 +43,7 @@ type Proxynode struct {
 	runDoneCh chan struct{}
 
 	Handler         func(conn *yamux.Stream)
+	OnConnected     func()
 	OnServerMessage func(string)
 }
 
@@ -52,6 +57,7 @@ func New(ctx context.Context, params Params) *Proxynode {
 		runDoneCh: make(chan struct{}),
 
 		Handler:         func(conn *yamux.Stream) {},
+		OnConnected:     func() {},
 		OnServerMessage: func(string) {},
 	}
 
@@ -72,12 +78,12 @@ func (a *Proxynode) Wait(ctx context.Context) error {
 
 func (a *Proxynode) Close() error {
 	a.shutdownMu.Lock()
-	defer a.shutdownMu.Unlock()
-
 	if a.shutdown {
+		a.shutdownMu.Unlock()
 		return nil
 	}
 	a.shutdown = true
+	a.shutdownMu.Unlock()
 
 	a.shutdownErrMu.Lock()
 	if a.shutdownErr == nil {
@@ -108,19 +114,20 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = resp.Body.Close()
 	}
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("websocket dial failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrDialFailed, err))
 		return
 	}
-
-	log.Info("connected to server")
 
 	wsstream := wsstream.New(conn)
 	session, err := yamux.Server(wsstream, yamux.DefaultConfig())
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("yamux server creation failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrYamuxServerFailed, err))
 		_ = conn.Close()
 		return
 	}
+	a.OnConnected()
 
 	wsstream.HandleTextMessage = func(r io.Reader) {
 		b, err := io.ReadAll(r)
@@ -137,7 +144,8 @@ func (a *Proxynode) run(ctx context.Context) {
 
 		switch msg.Message.(type) {
 		case *pb.Control_Disconnect_:
-			a.exitErr(fmt.Errorf("server initiated disconnect: %s", msg.GetDisconnect().Reason))
+			log.Info("server initiated disconnect", zap.String("reason", msg.GetDisconnect().Reason))
+			a.exitErr(fmt.Errorf("%w: %s", ErrServerDisconnect, msg.GetDisconnect().Reason))
 
 		case *pb.Control_Motd:
 			a.OnServerMessage(msg.GetMotd().Message)
@@ -163,7 +171,12 @@ func (a *Proxynode) run(ctx context.Context) {
 	for {
 		c, err := session.AcceptStream()
 		if err != nil {
-			a.exitErr(err)
+			if a.isShutdown() {
+				log.Debug("accept stream stopped during shutdown", zap.Error(err))
+			} else {
+				log.Warn("accept stream failed", zap.Error(err))
+			}
+			a.exitErr(fmt.Errorf("%w: %w", ErrAcceptStreamFailed, err))
 			break
 		}
 
@@ -173,6 +186,12 @@ func (a *Proxynode) run(ctx context.Context) {
 			a.Handler(c)
 		}()
 	}
+}
+
+func (a *Proxynode) isShutdown() bool {
+	a.shutdownMu.Lock()
+	defer a.shutdownMu.Unlock()
+	return a.shutdown
 }
 
 func (a *Proxynode) exitErr(err error) {

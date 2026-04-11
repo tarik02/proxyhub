@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -83,9 +85,6 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	ctx = logging.WithLogger(ctx, log)
 
-	t := time.NewTicker(1 * time.Second)
-	defer t.Stop()
-
 	isInWhitelist := func(target string) bool {
 		for _, g := range config.EgressWhitelist {
 			if g.Match(target) {
@@ -161,12 +160,23 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	go viper.WatchConfig()
 
-	defer wg.Wait()
-
 	log.Info("application running")
+	reconnects := newReconnectPolicy(rand.New(rand.NewSource(time.Now().UnixNano())))
+	var lastErr error
 
 loop:
 	for {
+		connectFields := []zap.Field{
+			zap.String("endpoint", config.Endpoint),
+		}
+		if lastErr != nil {
+			connectFields = append(connectFields,
+				zap.String("previous_reason", classifyReconnectError(lastErr)),
+				zap.Error(lastErr),
+			)
+		}
+		log.Info("connecting to server", connectFields...)
+
 		app := proxynode.New(ctx, proxynode.Params{
 			Version:  version,
 			Endpoint: config.Endpoint,
@@ -189,44 +199,101 @@ loop:
 			log.Info("server message", zap.String("message", message))
 		}
 
-		wg.Add(2)
-
-		go func() {
-			defer wg.Done()
-
+		connectedCh := make(chan struct{}, 1)
+		var connectedSeen atomic.Bool
+		app.OnConnected = func() {
+			connectedSeen.Store(true)
 			select {
-			case <-ctx.Done():
-				return
-			case <-app.CloseChan():
-				return
-			case <-shutdownChan:
+			case connectedCh <- struct{}{}:
+			default:
 			}
-
-			_ = app.Close()
-		}()
-
-		go func() {
-			defer wg.Done()
-
-			if err := app.Wait(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, proxynode.ErrShutdown) {
-				log.Error("app error", zap.Error(err))
-			}
-		}()
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-shutdownChan:
-			break loop
-		case <-app.CloseChan():
 		}
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-shutdownChan:
-			break loop
-		case <-t.C:
+		waitErrCh := make(chan error, 1)
+		go func() {
+			waitErrCh <- app.Wait(ctx)
+		}()
+
+		connected := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				_ = app.Close()
+				return ctx.Err()
+
+			case <-shutdownChan:
+				_ = app.Close()
+
+				if err := <-waitErrCh; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, proxynode.ErrShutdown) {
+					log.Debug("app stopped during shutdown", zap.Error(err))
+				}
+
+				break loop
+
+			case <-connectedCh:
+				if connected {
+					continue
+				}
+
+				connected = true
+				lastErr = nil
+				reconnects.Reset()
+				log.Info("connected to server", zap.String("endpoint", config.Endpoint))
+
+			case err := <-waitErrCh:
+				if connectedSeen.Load() && !connected {
+					connected = true
+					reconnects.Reset()
+				}
+
+				if err == nil || errors.Is(err, proxynode.ErrShutdown) {
+					break loop
+				}
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+
+				lastErr = err
+				attempt := reconnects.Next()
+				phase := "startup"
+				if connected {
+					phase = "session"
+				}
+
+				log.Error("app error",
+					zap.String("reason", classifyReconnectError(err)),
+					zap.String("phase", phase),
+					zap.Int("retry_attempt", attempt.Number),
+					zap.Duration("retry_delay", attempt.Delay),
+					zap.Error(err),
+				)
+
+				timer := time.NewTimer(attempt.Delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return ctx.Err()
+
+				case <-shutdownChan:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					break loop
+
+				case <-timer.C:
+				}
+
+				continue loop
+			}
 		}
 	}
 

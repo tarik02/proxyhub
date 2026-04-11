@@ -17,6 +17,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+const bridgeDrainTimeout = 5 * time.Second
+
 type Proxy struct {
 	id      string
 	version string
@@ -137,14 +139,20 @@ func (p *Proxy) Wait(ctx context.Context) error {
 	}
 }
 
+func (p *Proxy) Err() error {
+	p.shutdownErrMu.Lock()
+	defer p.shutdownErrMu.Unlock()
+	return p.shutdownErr
+}
+
 func (p *Proxy) Close() error {
 	p.shutdownMu.Lock()
-	defer p.shutdownMu.Unlock()
-
 	if p.shutdown {
+		p.shutdownMu.Unlock()
 		return nil
 	}
 	p.shutdown = true
+	p.shutdownMu.Unlock()
 
 	p.shutdownErrMu.Lock()
 	if p.shutdownErr == nil {
@@ -185,7 +193,11 @@ func (p *Proxy) acceptConns(ctx context.Context) {
 	for {
 		conn, err := p.listener.Accept()
 		if err != nil {
-			log.Debug("accept failed", zap.Error(err))
+			if p.isShutdown() {
+				log.Debug("accept loop stopped during shutdown", zap.Error(err))
+			} else {
+				log.Debug("accept failed", zap.Error(err))
+			}
 			p.exitErr(err)
 			break
 		}
@@ -214,11 +226,12 @@ loop:
 			break loop
 
 		case <-p.session.CloseChan():
+			log.Debug("session close signal received")
 			p.exitErr(ErrSessionClosed)
 
 		case conn := <-p.connsChan:
 			wg.Add(1)
-			go func() {
+			go func(conn io.ReadWriteCloser) {
 				defer wg.Done()
 
 				stream, err := p.session.OpenStream()
@@ -227,33 +240,8 @@ loop:
 					return
 				}
 
-				ch1, ch2 := make(chan struct{}), make(chan struct{})
-
-				go func() {
-					defer close(ch1)
-					if _, err2 := io.Copy(stream, conn); err != nil {
-						err = err2
-					}
-				}()
-
-				go func() {
-					defer close(ch2)
-					if _, err2 := io.Copy(conn, stream); err != nil {
-						err = err2
-					}
-				}()
-
-				select {
-				case <-ctx.Done():
-					_ = conn.Close()
-
-				case <-ch1:
-					_ = conn.Close()
-
-				case <-ch2:
-					_ = conn.Close()
-				}
-			}()
+				bridgeConn(ctx, conn, stream, bridgeDrainTimeout)
+			}(conn)
 		}
 	}
 
@@ -261,13 +249,19 @@ loop:
 	wg.Wait()
 	log.Debug("all connections finished")
 
-	log.Debug("closing session")
+	log.Debug("session close start")
 	if err := p.session.Close(); err != nil {
 		log.Debug("session close failed", zap.Error(err))
 		p.exitErr(err)
 	} else {
-		log.Debug("session closed")
+		log.Debug("session close completed")
 	}
+}
+
+func (p *Proxy) isShutdown() bool {
+	p.shutdownMu.Lock()
+	defer p.shutdownMu.Unlock()
+	return p.shutdown
 }
 
 func (p *Proxy) exitErr(err error) {
@@ -279,6 +273,117 @@ func (p *Proxy) exitErr(err error) {
 	go func() {
 		_ = p.Close()
 	}()
+}
+
+type bridgeDirection int
+
+const (
+	bridgeDirectionConnToStream bridgeDirection = iota
+	bridgeDirectionStreamToConn
+)
+
+type bridgeResult struct {
+	direction bridgeDirection
+	err       error
+}
+
+type readDeadlineSetter interface {
+	SetReadDeadline(time.Time) error
+}
+
+type writeDeadlineSetter interface {
+	SetWriteDeadline(time.Time) error
+}
+
+func bridgeConn(ctx context.Context, conn io.ReadWriteCloser, stream io.ReadWriteCloser, drainTimeout time.Duration) {
+	var closeConnOnce sync.Once
+	var closeStreamOnce sync.Once
+
+	closeConn := func() {
+		closeConnOnce.Do(func() {
+			_ = conn.Close()
+		})
+	}
+	closeStream := func() {
+		closeStreamOnce.Do(func() {
+			_ = stream.Close()
+		})
+	}
+	closeBoth := func() {
+		interruptReadWrite(conn)
+		interruptReadWrite(stream)
+		closeConn()
+		closeStream()
+	}
+
+	results := make(chan bridgeResult, 2)
+
+	go func() {
+		_, err := io.Copy(stream, conn)
+		results <- bridgeResult{direction: bridgeDirectionConnToStream, err: err}
+	}()
+
+	go func() {
+		_, err := io.Copy(conn, stream)
+		results <- bridgeResult{direction: bridgeDirectionStreamToConn, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		closeBoth()
+		return
+
+	case result := <-results:
+		switch result.direction {
+		case bridgeDirectionConnToStream:
+			closeStream()
+			if waitForBridgeDrain(ctx, results, drainTimeout) {
+				closeConn()
+				return
+			}
+
+		case bridgeDirectionStreamToConn:
+			closeConn()
+			if waitForBridgeDrain(ctx, results, drainTimeout) {
+				closeStream()
+				return
+			}
+		}
+
+		closeBoth()
+	}
+}
+
+func waitForBridgeDrain(ctx context.Context, results <-chan bridgeResult, drainTimeout time.Duration) bool {
+	timer := time.NewTimer(drainTimeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-results:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func interruptReadWrite(rwc io.ReadWriteCloser) {
+	now := time.Now()
+
+	if setter, ok := rwc.(readDeadlineSetter); ok {
+		_ = setter.SetReadDeadline(now)
+	}
+	if setter, ok := rwc.(writeDeadlineSetter); ok {
+		_ = setter.SetWriteDeadline(now)
+	}
 }
 
 func (p *Proxy) QueueConn(ctx context.Context, conn io.ReadWriteCloser) error {
