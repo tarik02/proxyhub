@@ -26,9 +26,9 @@ func TestClassifyProxyRemoval(t *testing.T) {
 			want: "client_disconnect",
 		},
 		{
-			name:           "duplicate replaced",
-			explicitReason: "duplicate_replaced",
-			want:           "duplicate_replaced",
+			name: "duplicate replaced",
+			err:  ErrDuplicateReplaced,
+			want: "duplicate_replaced",
 		},
 		{
 			name:            "server shutdown",

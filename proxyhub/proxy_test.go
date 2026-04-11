@@ -19,7 +19,7 @@ func TestBridgeConnAllowsRemoteDrainAfterLocalEOF(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		bridgeConn(context.Background(), conn, stream, 200*time.Millisecond)
+		_, _ = bridgeConn(context.Background(), conn, stream, 200*time.Millisecond)
 		close(done)
 	}()
 
@@ -49,7 +49,7 @@ func TestBridgeConnAllowsLocalDrainAfterRemoteEOF(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		bridgeConn(context.Background(), conn, stream, 200*time.Millisecond)
+		_, _ = bridgeConn(context.Background(), conn, stream, 200*time.Millisecond)
 		close(done)
 	}()
 
@@ -79,7 +79,7 @@ func TestBridgeConnTimesOutIfSecondDirectionHangs(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		bridgeConn(context.Background(), conn, stream, 50*time.Millisecond)
+		_, _ = bridgeConn(context.Background(), conn, stream, 50*time.Millisecond)
 		close(done)
 	}()
 
@@ -100,7 +100,7 @@ func TestBridgeConnShutdownInterruptsDrain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		bridgeConn(ctx, conn, stream, time.Second)
+		_, _ = bridgeConn(ctx, conn, stream, time.Second)
 		close(done)
 	}()
 

@@ -27,6 +27,8 @@ func classifyProxyRemoval(err error, explicitReason string, hubShuttingDown bool
 	switch {
 	case errors.Is(err, ErrSessionClosed):
 		return "session_closed"
+	case errors.Is(err, ErrDuplicateReplaced):
+		return "duplicate_replaced"
 	case errors.Is(err, ErrShutdown) && hubShuttingDown:
 		return "server_shutdown"
 	case err != nil && strings.HasPrefix(err.Error(), "client initiated disconnect:"):

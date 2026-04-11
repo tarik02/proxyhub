@@ -3,18 +3,33 @@
   "extends": [
     "config:recommended"
   ],
-  "baseBranches": [
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "baseBranchPatterns": [
     "next"
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": [
-        "^\\.github/workflows/[^/]+\\.ya?ml$"
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+?)(?: depName=(?<depName>.+?))? packageName=(?<packageName>.+?)(?: versioning=(?<versioning>[a-z-]+?))?\\s+\\S+: (?<currentValue>.+?)\\s"
       ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^go\\.mod$/"
+      ],
+      "matchStrings": [
+        "go (?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)"
+      ],
+      "depTypeTemplate": "golang",
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go",
+      "packageNameTemplate": "go"
     }
   ]
 }

@@ -1,0 +1,23 @@
+syntax = "proto3";
+package pb.pbnode;
+
+option go_package = "github.com/tarik02/proxyhub/pb/pbnode";
+
+message MOTDRequest {
+    string message = 1;
+}
+
+message MOTDResponse {
+}
+
+message DisconnectRequest {
+    string reason = 1;
+}
+
+message DisconnectResponse {
+}
+
+service Service {
+    rpc MOTD (MOTDRequest) returns (MOTDResponse);
+    rpc Disconnect (DisconnectRequest) returns (DisconnectResponse);
+}

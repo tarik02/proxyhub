@@ -1,9 +1,9 @@
 log:
   level: info
 
-endpoint: "ws://localhost:8080/connect"
+endpoint: "ws://localhost:8085/connect"
 username: "username"
 password: "password"
 
 egressWhitelist:
-  - '{www.,}example.com:{80,443}'
+  - "{www.,}example.com:{80,443}"

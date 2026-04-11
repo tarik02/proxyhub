@@ -2,17 +2,16 @@ package main
 
 import (
 	"github.com/gobwas/glob"
-	"go.uber.org/zap/zapcore"
+	"github.com/tarik02/proxyhub/logging"
 )
 
 type Config struct {
-	Log struct {
-		Level zapcore.Level
-	}
+	Log logging.Config
 
 	Endpoint string
 	Username string
 	Password string
 
-	EgressWhitelist []glob.Glob
+	EgressWhitelist       []glob.Glob
+	EgressWhitelistString []string `mapstructure:"egressWhitelist"`
 }

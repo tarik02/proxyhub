@@ -2,7 +2,6 @@ package proxyhub
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -10,23 +9,17 @@ import (
 
 	"github.com/hashicorp/yamux"
 	"github.com/tarik02/proxyhub/logging"
-	"github.com/tarik02/proxyhub/pb"
-	"github.com/tarik02/proxyhub/wsstream"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const bridgeDrainTimeout = 5 * time.Second
 
 type Proxy struct {
-	id      string
-	version string
-	started time.Time
+	id string
 
-	listener net.Listener
-	ws       *wsstream.WSStream
-	session  *yamux.Session
+	session *yamux.Session
+	handler ProxyHandler
 
 	connsChan chan io.ReadWriteCloser
 
@@ -36,104 +29,53 @@ type Proxy struct {
 	shutdownErr   error
 	shutdownErrMu sync.Mutex
 
-	acceptConnsDoneCh chan struct{}
-	runDoneCh         chan struct{}
-	closedCh          chan struct{}
+	runDoneCh chan struct{}
+	closedCh  chan struct{}
+
+	OnConnection      func()
+	OnConnectionStats func(recv, sent int64)
 }
 
-func NewProxy(ctx context.Context, id string, version string, listener net.Listener, ws *wsstream.WSStream, session *yamux.Session) *Proxy {
-	log := logging.FromContext(ctx, zap.String("proxy_id", id)).Named("proxy")
-
+func NewProxy(ctx context.Context, id string, session *yamux.Session, handlerFactory func(*Proxy) (ProxyHandler, error)) (*Proxy, error) {
 	res := &Proxy{
-		id:      id,
-		version: version,
-		started: time.Now(),
+		id: id,
 
-		listener: listener,
-		ws:       ws,
-		session:  session,
+		session: session,
 
 		connsChan: make(chan io.ReadWriteCloser),
 
-		shutdownCh:        make(chan struct{}),
-		acceptConnsDoneCh: make(chan struct{}),
-		runDoneCh:         make(chan struct{}),
-		closedCh:          make(chan struct{}),
+		shutdownCh: make(chan struct{}),
+		runDoneCh:  make(chan struct{}),
+		closedCh:   make(chan struct{}),
+
+		OnConnection:      func() {},
+		OnConnectionStats: func(recv, sent int64) {},
 	}
 
-	go res.acceptConns(ctx)
+	handler, err := handlerFactory(res)
+	if err != nil {
+		return nil, err
+	}
+
+	res.handler = handler
+
 	go res.run(ctx)
 
-	res.ws.HandleTextMessage = func(r io.Reader) {
-		b, err := io.ReadAll(r)
-		if err != nil {
-			log.Warn("reading text message failed", zap.Error(err))
-			return
-		}
-
-		msg := &pb.Control{}
-		if err := protojson.Unmarshal(b, msg); err != nil {
-			log.Warn("unmarshaling message failed", zap.Error(err))
-			return
-		}
-
-		switch msg.Message.(type) {
-		case *pb.Control_Disconnect_:
-			res.exitErr(fmt.Errorf("client initiated disconnect: %s", msg.GetDisconnect().Reason))
-
-		default:
-			log.Warn("invalid message", zap.Any("message", msg))
-		}
-	}
-
-	return res
+	return res, nil
 }
 
 func (p *Proxy) ID() string {
 	return p.id
 }
 
-func (p *Proxy) Version() string {
-	return p.version
-}
-
-func (p *Proxy) Started() time.Time {
-	return p.started
-}
-
-func (p *Proxy) Port() int {
-	if p.listener != nil {
-		if addr, ok := p.listener.Addr().(*net.TCPAddr); ok {
-			return addr.Port
-		}
-	}
-	return 0
-}
-
-func (p *Proxy) SendMOTD(message string) error {
-	return p.SendControlMessage(&pb.Control{
-		Message: &pb.Control_Motd{
-			Motd: &pb.Control_MOTD{
-				Message: message,
-			},
-		},
-	})
-}
-
-func (p *Proxy) SendControlMessage(msg *pb.Control) error {
-	buf, err := protojson.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	return p.ws.WriteText(string(buf))
+func (p *Proxy) Handler() ProxyHandler {
+	return p.handler
 }
 
 func (p *Proxy) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-
 	case <-p.closedCh:
 		return p.shutdownErr
 	}
@@ -146,6 +88,10 @@ func (p *Proxy) Err() error {
 }
 
 func (p *Proxy) Close() error {
+	return p.CloseWithError(ErrShutdown)
+}
+
+func (p *Proxy) CloseWithError(err error) error {
 	p.shutdownMu.Lock()
 	if p.shutdown {
 		p.shutdownMu.Unlock()
@@ -156,15 +102,13 @@ func (p *Proxy) Close() error {
 
 	p.shutdownErrMu.Lock()
 	if p.shutdownErr == nil {
-		p.shutdownErr = ErrShutdown
+		p.shutdownErr = err
 	}
 	p.shutdownErrMu.Unlock()
 
 	close(p.shutdownCh)
 
-	<-p.acceptConnsDoneCh
 	<-p.runDoneCh
-
 	close(p.closedCh)
 
 	return nil
@@ -174,53 +118,25 @@ func (p *Proxy) CloseChan() <-chan struct{} {
 	return p.shutdownCh
 }
 
-func (p *Proxy) acceptConns(ctx context.Context) {
-	defer close(p.acceptConnsDoneCh)
-
-	log := logging.FromContext(ctx, zap.String("proxy_id", p.id)).Named("proxy")
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-p.shutdownCh:
-		}
-
-		log.Debug("closing listener")
-		_ = p.listener.Close()
-	}()
-
-	log.Debug("accepting connections")
-	for {
-		conn, err := p.listener.Accept()
-		if err != nil {
-			if p.isShutdown() {
-				log.Debug("accept loop stopped during shutdown", zap.Error(err))
-			} else {
-				log.Debug("accept failed", zap.Error(err))
-			}
-			p.exitErr(err)
-			break
-		}
-
-		if err := p.QueueConn(ctx, conn); err != nil {
-			if err := conn.Close(); err != nil {
-				log.Warn("close failed", zap.Error(err))
-			}
-		}
-	}
-}
-
 func (p *Proxy) run(ctx context.Context) {
 	defer close(p.runDoneCh)
 
 	log := logging.FromContext(ctx, zap.String("proxy_id", p.id)).Named("proxy")
 	wg := sync.WaitGroup{}
 
+	log.Debug("waiting for handler to be ready")
+	select {
+	case <-ctx.Done():
+	case <-p.shutdownCh:
+	case <-p.handler.Ready():
+		log.Debug("handler is ready")
+	}
+
 loop:
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			break loop
 
 		case <-p.shutdownCh:
 			break loop
@@ -236,18 +152,39 @@ loop:
 
 				stream, err := p.session.OpenStream()
 				if err != nil {
+					log.Warn("failed to open stream for connection", zap.Error(err))
 					_ = conn.Close()
 					return
 				}
 
-				bridgeConn(ctx, conn, stream, bridgeDrainTimeout)
+				go p.OnConnection()
+
+				recv, sent := bridgeConn(ctx, conn, stream, bridgeDrainTimeout)
+				go p.OnConnectionStats(recv, sent)
 			}(conn)
 		}
 	}
 
-	log.Debug("waiting for connections to finish")
-	wg.Wait()
-	log.Debug("all connections finished")
+	select {
+	case <-ctx.Done():
+		log.Debug("context done, exiting run loop")
+
+	default:
+		log.Debug("waiting for connections to finish")
+
+		wgDoneCh := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(wgDoneCh)
+		}()
+
+		select {
+		case <-ctx.Done():
+			log.Debug("context done while waiting for connections, exiting run loop")
+		case <-wgDoneCh:
+			log.Debug("all connections finished")
+		}
+	}
 
 	log.Debug("session close start")
 	if err := p.session.Close(); err != nil {
@@ -270,6 +207,7 @@ func (p *Proxy) exitErr(err error) {
 		p.shutdownErr = err
 	}
 	p.shutdownErrMu.Unlock()
+
 	go func() {
 		_ = p.Close()
 	}()
@@ -284,6 +222,7 @@ const (
 
 type bridgeResult struct {
 	direction bridgeDirection
+	bytes     int64
 	err       error
 }
 
@@ -295,7 +234,7 @@ type writeDeadlineSetter interface {
 	SetWriteDeadline(time.Time) error
 }
 
-func bridgeConn(ctx context.Context, conn io.ReadWriteCloser, stream io.ReadWriteCloser, drainTimeout time.Duration) {
+func bridgeConn(ctx context.Context, conn io.ReadWriteCloser, stream io.ReadWriteCloser, drainTimeout time.Duration) (recv int64, sent int64) {
 	var closeConnOnce sync.Once
 	var closeStreamOnce sync.Once
 
@@ -316,45 +255,59 @@ func bridgeConn(ctx context.Context, conn io.ReadWriteCloser, stream io.ReadWrit
 		closeStream()
 	}
 
+	recordResult := func(result bridgeResult) {
+		switch result.direction {
+		case bridgeDirectionConnToStream:
+			sent += result.bytes
+		case bridgeDirectionStreamToConn:
+			recv += result.bytes
+		}
+	}
+
 	results := make(chan bridgeResult, 2)
 
 	go func() {
-		_, err := io.Copy(stream, conn)
-		results <- bridgeResult{direction: bridgeDirectionConnToStream, err: err}
+		n, err := io.Copy(stream, conn)
+		results <- bridgeResult{direction: bridgeDirectionConnToStream, bytes: n, err: err}
 	}()
 
 	go func() {
-		_, err := io.Copy(conn, stream)
-		results <- bridgeResult{direction: bridgeDirectionStreamToConn, err: err}
+		n, err := io.Copy(conn, stream)
+		results <- bridgeResult{direction: bridgeDirectionStreamToConn, bytes: n, err: err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		closeBoth()
-		return
+		return recv, sent
 
 	case result := <-results:
+		recordResult(result)
+
 		switch result.direction {
 		case bridgeDirectionConnToStream:
 			closeStream()
-			if waitForBridgeDrain(ctx, results, drainTimeout) {
+			if second, ok := waitForBridgeDrain(ctx, results, drainTimeout); ok {
+				recordResult(second)
 				closeConn()
-				return
+				return recv, sent
 			}
 
 		case bridgeDirectionStreamToConn:
 			closeConn()
-			if waitForBridgeDrain(ctx, results, drainTimeout) {
+			if second, ok := waitForBridgeDrain(ctx, results, drainTimeout); ok {
+				recordResult(second)
 				closeStream()
-				return
+				return recv, sent
 			}
 		}
 
 		closeBoth()
+		return recv, sent
 	}
 }
 
-func waitForBridgeDrain(ctx context.Context, results <-chan bridgeResult, drainTimeout time.Duration) bool {
+func waitForBridgeDrain(ctx context.Context, results <-chan bridgeResult, drainTimeout time.Duration) (bridgeResult, bool) {
 	timer := time.NewTimer(drainTimeout)
 	defer func() {
 		if !timer.Stop() {
@@ -367,11 +320,11 @@ func waitForBridgeDrain(ctx context.Context, results <-chan bridgeResult, drainT
 
 	select {
 	case <-ctx.Done():
-		return false
-	case <-results:
-		return true
+		return bridgeResult{}, false
+	case result := <-results:
+		return result, true
 	case <-timer.C:
-		return false
+		return bridgeResult{}, false
 	}
 }
 

@@ -10,8 +10,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 	"github.com/tarik02/proxyhub/pb"
-	"google.golang.org/protobuf/encoding/protojson"
+	"github.com/tarik02/proxyhub/pb/pbhub"
+	"github.com/tarik02/proxyhub/pb/pbnode"
+	"github.com/tarik02/proxyhub/util"
+	"github.com/tarik02/proxyhub/wsstream"
+	"google.golang.org/grpc"
 )
 
 var testUpgrader = websocket.Upgrader{
@@ -39,37 +44,11 @@ func TestProxynodeDialFailureReturnsPromptly(t *testing.T) {
 func TestProxynodeServerDisconnectBecomesTerminalError(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := testUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade failed: %v", err)
-			return
-		}
-		defer conn.Close()
-
-		message, err := protojson.Marshal(&pb.Control{
-			Message: &pb.Control_Disconnect_{
-				Disconnect: &pb.Control_Disconnect{
-					Reason: "maintenance window",
-				},
-			},
+	server := newProxynodeTestServer(t, func(node pbnode.ServiceClient, conn *websocket.Conn) {
+		_, _ = node.Disconnect(context.Background(), &pbnode.DisconnectRequest{
+			Reason: "maintenance window",
 		})
-		if err != nil {
-			t.Errorf("marshal failed: %v", err)
-			return
-		}
-
-		if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			t.Errorf("write failed: %v", err)
-			return
-		}
-
-		for {
-			if _, _, err := conn.NextReader(); err != nil {
-				return
-			}
-		}
-	}))
+	})
 	defer server.Close()
 
 	app := New(context.Background(), Params{
@@ -89,16 +68,10 @@ func TestProxynodeServerDisconnectBecomesTerminalError(t *testing.T) {
 func TestProxynodeTransportCloseReturnsPromptly(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := testUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade failed: %v", err)
-			return
-		}
-
+	server := newProxynodeTestServer(t, func(node pbnode.ServiceClient, conn *websocket.Conn) {
 		time.Sleep(50 * time.Millisecond)
 		_ = conn.Close()
-	}))
+	})
 	defer server.Close()
 
 	app := New(context.Background(), Params{
@@ -115,19 +88,8 @@ func TestProxynodeTransportCloseReturnsPromptly(t *testing.T) {
 func TestProxynodeShutdownReturnsErrShutdown(t *testing.T) {
 	t.Parallel()
 
-	releaseConn := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := testUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade failed: %v", err)
-			return
-		}
-		defer conn.Close()
-
-		<-releaseConn
-	}))
+	server := newProxynodeTestServer(t, nil)
 	defer server.Close()
-	defer close(releaseConn)
 
 	app := New(context.Background(), Params{
 		Endpoint: wsURL(server.URL),
@@ -143,6 +105,86 @@ func TestProxynodeShutdownReturnsErrShutdown(t *testing.T) {
 	if !errors.Is(err, ErrShutdown) {
 		t.Fatalf("expected ErrShutdown, got %v", err)
 	}
+}
+
+type testHubService struct {
+	pbhub.UnimplementedServiceServer
+	helloCh chan struct{}
+}
+
+func (s *testHubService) Hello(ctx context.Context, req *pbhub.HelloRequest) (*pbhub.HelloResponse, error) {
+	select {
+	case s.helloCh <- struct{}{}:
+	default:
+	}
+
+	return &pbhub.HelloResponse{}, nil
+}
+
+func (s *testHubService) UpdatedEgressWhitelist(ctx context.Context, req *pbhub.UpdatedEgressWhitelistRequest) (*pbhub.UpdatedEgressWhitelistResponse, error) {
+	return &pbhub.UpdatedEgressWhitelistResponse{}, nil
+}
+
+func newProxynodeTestServer(t *testing.T, afterHello func(pbnode.ServiceClient, *websocket.Conn)) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		wsConn := wsstream.New(conn)
+		session, err := yamux.Client(wsConn, yamux.DefaultConfig())
+		if err != nil {
+			t.Errorf("yamux client failed: %v", err)
+			return
+		}
+		defer session.Close()
+
+		control1, err := session.OpenStream()
+		if err != nil {
+			t.Errorf("open control stream failed: %v", err)
+			return
+		}
+		defer control1.Close()
+
+		control2, err := session.OpenStream()
+		if err != nil {
+			t.Errorf("open control stream failed: %v", err)
+			return
+		}
+		defer control2.Close()
+
+		grpcServer := grpc.NewServer()
+		defer grpcServer.Stop()
+
+		hub := &testHubService{helloCh: make(chan struct{}, 1)}
+		pbhub.RegisterServiceServer(grpcServer, hub)
+
+		if err := util.GrpcServeOnConn(grpcServer, control1); err != nil {
+			t.Errorf("grpc serve failed: %v", err)
+			return
+		}
+
+		nodeConn, err := util.GrpcClientFromConn(control2)
+		if err != nil {
+			t.Errorf("grpc client failed: %v", err)
+			return
+		}
+		defer nodeConn.Close()
+
+		if afterHello != nil {
+			go func() {
+				<-hub.helloCh
+				afterHello(pbnode.NewServiceClient(nodeConn), conn)
+			}()
+		}
+
+		<-session.CloseChan()
+	}))
 }
 
 func waitForProxynode(t *testing.T, app *Proxynode) error {
@@ -162,3 +204,5 @@ func waitForProxynode(t *testing.T, app *Proxynode) error {
 func wsURL(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http")
 }
+
+var _ = pb.EgressWhitelist{}
