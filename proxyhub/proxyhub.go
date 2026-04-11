@@ -18,7 +18,7 @@ type Proxyhub struct {
 	proxies       map[string]*Proxy
 	proxiesMu     sync.RWMutex
 	proxiesNew    chan *Proxy
-	proxiesRemove chan *Proxy
+	proxiesRemove chan proxyRemoval
 
 	shutdown      bool
 	shutdownMu    sync.Mutex
@@ -39,7 +39,7 @@ func New(ctx context.Context) *Proxyhub {
 		proxies: make(map[string]*Proxy),
 
 		proxiesNew:    make(chan *Proxy),
-		proxiesRemove: make(chan *Proxy),
+		proxiesRemove: make(chan proxyRemoval),
 
 		shutdownCh: make(chan struct{}),
 
@@ -67,12 +67,12 @@ func (p *Proxyhub) Wait(ctx context.Context) error {
 
 func (p *Proxyhub) Close() error {
 	p.shutdownMu.Lock()
-	defer p.shutdownMu.Unlock()
-
 	if p.shutdown {
+		p.shutdownMu.Unlock()
 		return nil
 	}
 	p.shutdown = true
+	p.shutdownMu.Unlock()
 
 	p.shutdownErrMu.Lock()
 	if p.shutdownErr == nil {
@@ -117,38 +117,50 @@ loop:
 
 				log.Warn("proxy already exists, disconnecting it", zap.String("proxy_id", proxy.ID()))
 				_ = oldProxy.Handler().SendDisconnect(ctx, "another proxy with the same ID connected")
-				_ = oldProxy.Close()
+				_ = oldProxy.CloseWithError(ErrDuplicateReplaced)
 			}
 
 			log.Info("proxy added", zap.String("proxy_id", proxy.ID()))
 
 			go func() {
 				err := proxy.Wait(ctx)
+				removalErr := proxy.Err()
+				if removalErr == nil {
+					removalErr = err
+				}
+				removal := newProxyRemoval(proxy, removalErr, "", p.isShuttingDown())
 
-				if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrShutdown) && !errors.Is(err, ErrSessionClosed) {
+				if errors.Is(removalErr, ErrSessionClosed) {
+					log.Info("proxy session ended", zap.String("proxy_id", proxy.ID()), zap.String("reason", removal.reason))
+				} else if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrShutdown) {
 					log.Error("proxy error", zap.Error(err))
 				}
 
 				select {
 				case <-p.shutdownCh:
-				case p.proxiesRemove <- proxy:
+				case p.proxiesRemove <- removal:
 				}
 			}()
 
 			p.OnProxyAdded(proxy)
 
-		case proxy := <-p.proxiesRemove:
+		case removal := <-p.proxiesRemove:
 			p.proxiesMu.Lock()
-			if p.proxies[proxy.ID()] != proxy {
-				p.proxiesMu.Unlock()
-				continue loop
+			if existing := p.proxies[removal.proxy.ID()]; existing == removal.proxy {
+				delete(p.proxies, removal.proxy.ID())
 			}
-			delete(p.proxies, proxy.ID())
 			p.proxiesMu.Unlock()
 
-			log.Info("proxy removed", zap.String("proxy_id", proxy.ID()))
+			fields := []zap.Field{
+				zap.String("proxy_id", removal.proxy.ID()),
+				zap.String("reason", removal.reason),
+			}
+			if includeProxyRemovalError(removal) {
+				fields = append(fields, zap.Error(removal.err))
+			}
+			log.Info("proxy removed", fields...)
 
-			p.OnProxyRemoved(proxy)
+			p.OnProxyRemoved(removal.proxy)
 		}
 	}
 
@@ -156,10 +168,8 @@ loop:
 
 	log.Debug("disconnecting proxies")
 	for _, proxy := range p.proxies {
-		p.OnProxyRemoved(proxy)
-
 		wg.Add(1)
-		go func() {
+		go func(proxy *Proxy) {
 			defer wg.Done()
 
 			if err := proxy.Handler().SendDisconnect(ctx, "proxyhub is shutting down"); err != nil {
@@ -168,12 +178,30 @@ loop:
 
 			log.Debug("closing proxy connection", zap.String("proxy_id", proxy.ID()))
 			_ = proxy.Close()
-		}()
+
+			removal := newProxyRemoval(proxy, proxy.Err(), "server_shutdown", true)
+			fields := []zap.Field{
+				zap.String("proxy_id", proxy.ID()),
+				zap.String("reason", removal.reason),
+			}
+			if includeProxyRemovalError(removal) {
+				fields = append(fields, zap.Error(removal.err))
+			}
+			log.Info("proxy removed", fields...)
+
+			p.OnProxyRemoved(proxy)
+		}(proxy)
 	}
 
 	log.Debug("waiting for all proxies to be closed")
 	wg.Wait()
 	log.Debug("all proxies closed")
+}
+
+func (p *Proxyhub) isShuttingDown() bool {
+	p.shutdownMu.Lock()
+	defer p.shutdownMu.Unlock()
+	return p.shutdown
 }
 
 func (p *Proxyhub) exitErr(err error) { // nolint:unused
@@ -218,14 +246,16 @@ func (p *Proxyhub) handleProxy(req *http.Request, c *goproxy.ProxyCtx) (*http.Re
 	}
 
 	c.RoundTripper = goproxy.RoundTripperFunc(func(req *http.Request, c *goproxy.ProxyCtx) (*http.Response, error) {
-		client := http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return proxy.DialContext(ctx, network, addr)
-				},
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return proxy.DialContext(ctx, network, addr)
 			},
 		}
-		return client.Do(req)
+
+		outReq := req.Clone(req.Context())
+		outReq.RequestURI = ""
+
+		return transport.RoundTrip(outReq)
 	})
 
 	c.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {

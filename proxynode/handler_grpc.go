@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tarik02/proxyhub/logging"
 	"github.com/tarik02/proxyhub/pb/pbnode"
+	"go.uber.org/zap"
 )
 
 type HandlerGRPC struct {
@@ -19,6 +21,7 @@ func (h *HandlerGRPC) MOTD(ctx context.Context, req *pbnode.MOTDRequest) (*pbnod
 }
 
 func (h *HandlerGRPC) Disconnect(ctx context.Context, req *pbnode.DisconnectRequest) (*pbnode.DisconnectResponse, error) {
-	_ = h.proxy.CloseWithError(fmt.Errorf("server initiated disconnect: %s", req.Reason))
+	logging.FromContext(ctx).Info("server initiated disconnect", zap.String("reason", req.Reason))
+	_ = h.proxy.CloseWithError(fmt.Errorf("%w: %s", ErrServerDisconnect, req.Reason))
 	return &pbnode.DisconnectResponse{}, nil
 }

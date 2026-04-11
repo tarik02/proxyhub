@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"testing"
 
@@ -8,6 +9,12 @@ import (
 )
 
 func TestLeaks(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:8080")
+	if err != nil {
+		t.Skipf("skipping leak test because :8080 is unavailable: %v", err)
+	}
+	_ = ln.Close()
+
 	defer goleak.VerifyNone(
 		t,
 		goleak.IgnoreAnyFunction("github.com/spf13/viper.(*Viper).WatchConfig.func1"),

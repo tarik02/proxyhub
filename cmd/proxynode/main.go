@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -53,9 +54,6 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 	if err := viper.ReadInConfig(); err != nil {
-		// TODO: Create default config, log and exit
-		// if errors.Is(err, &viper.ConfigFileNotFoundError{}) {
-		// }
 		log.Fatal("error reading config file", zap.Error(err))
 	}
 
@@ -89,10 +87,10 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	ctx = logging.WithLogger(ctx, log)
 
-	t := time.NewTicker(1 * time.Second)
-	defer t.Stop()
-
 	isInWhitelist := func(target string) bool {
+		configMu.RLock()
+		defer configMu.RUnlock()
+
 		for _, g := range config.EgressWhitelist {
 			if g.Match(target) {
 				return true
@@ -102,7 +100,6 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	}
 
 	var s socks.Socks5Server
-
 	s.Dialer = proxy.FromEnvironment()
 	s.ValidateTarget = func(ctx context.Context, target string) error {
 		if !isInWhitelist(target) {
@@ -113,6 +110,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	}
 
 	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	go func() {
 		s := make(chan os.Signal, 1)
@@ -144,10 +142,8 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		select {
 		case <-doneCh:
 			return
-
 		case <-s:
 			log.Fatal("got interrupt signal again, terminating the process")
-
 		case <-time.After(5 * time.Second):
 			log.Fatal("shutdown timeout reached, terminating the process")
 		}
@@ -156,33 +152,53 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 	viper.OnConfigChange(func(in fsnotify.Event) {
 		wg.Add(1)
 		defer wg.Done()
-		if c, err := unmarshalConfig(); err != nil {
-			log.Warn("error reloading config", zap.Error(err))
-		} else {
-			log.Info("config reloaded")
 
-			configMu.Lock()
-			config = c
-			close(configChanged)
-			configChanged = make(chan struct{})
-			configMu.Unlock()
+		c, err := unmarshalConfig()
+		if err != nil {
+			log.Warn("error reloading config", zap.Error(err))
+			return
 		}
+
+		log.Info("config reloaded")
+
+		configMu.Lock()
+		config = c
+		close(configChanged)
+		configChanged = make(chan struct{})
+		configMu.Unlock()
 	})
 
 	go viper.WatchConfig()
 
-	defer wg.Wait()
-
 	log.Info("application running")
+
+	reconnects := newReconnectPolicy(nil)
+	var lastErr error
 
 loop:
 	for {
+		configMu.RLock()
+		currentConfig := config
+		configChangedCh := configChanged
+		configMu.RUnlock()
+
+		connectFields := []zap.Field{
+			zap.String("endpoint", currentConfig.Endpoint),
+		}
+		if lastErr != nil {
+			connectFields = append(connectFields,
+				zap.String("previous_reason", classifyReconnectError(lastErr)),
+				zap.Error(lastErr),
+			)
+		}
+		log.Info("connecting to server", connectFields...)
+
 		app := proxynode.New(ctx, proxynode.Params{
 			Version:         version,
-			Endpoint:        config.Endpoint,
-			Username:        config.Username,
-			Password:        config.Password,
-			EgressWhitelist: config.EgressWhitelistString,
+			Endpoint:        currentConfig.Endpoint,
+			Username:        currentConfig.Username,
+			Password:        currentConfig.Password,
+			EgressWhitelist: currentConfig.EgressWhitelistString,
 		})
 
 		app.Handler = func(conn *yamux.Stream) {
@@ -197,68 +213,113 @@ loop:
 			log.Info("server message", zap.String("message", message))
 		}
 
-		wg.Add(3)
-
-		go func() {
-			defer wg.Done()
-
+		connectedCh := make(chan struct{}, 1)
+		var connectedSeen atomic.Bool
+		app.OnConnected = func() {
+			connectedSeen.Store(true)
 			select {
-			case <-ctx.Done():
-				return
-			case <-app.CloseChan():
-				return
-			case <-shutdownChan:
+			case connectedCh <- struct{}{}:
+			default:
 			}
-
-			log.Debug("shutting down app")
-			_ = app.Close()
-		}()
-
-		go func() {
-			defer wg.Done()
-
-			if err := app.Wait(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, proxynode.ErrShutdown) {
-				log.Error("app error", zap.Error(err))
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
-
-			for {
-				select {
-				case <-ctx.Done():
-					return
-
-				case <-app.CloseChan():
-					return
-
-				case <-configChanged:
-					log.Debug("config changed, sending new egress whitelist")
-					if err := app.UpdateEgressWhitelist(ctx, config.EgressWhitelistString); err != nil {
-						if ctx.Err() != nil {
-							return
-						}
-						log.Error("error updating egress whitelist", zap.Error(err))
-					}
-				}
-			}
-		}()
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-shutdownChan:
-			break loop
-		case <-app.CloseChan():
 		}
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-shutdownChan:
-			break loop
-		case <-t.C:
+		waitErrCh := make(chan error, 1)
+		go func() {
+			waitErrCh <- app.Wait(ctx)
+		}()
+
+		connected := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				_ = app.Close()
+				return ctx.Err()
+
+			case <-shutdownChan:
+				_ = app.Close()
+				if err := <-waitErrCh; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, proxynode.ErrShutdown) {
+					log.Debug("app stopped during shutdown", zap.Error(err))
+				}
+				break loop
+
+			case <-configChangedCh:
+				configMu.RLock()
+				configChangedCh = configChanged
+				whitelist := append([]string(nil), config.EgressWhitelistString...)
+				configMu.RUnlock()
+
+				log.Debug("config changed, sending new egress whitelist")
+				if err := app.UpdateEgressWhitelist(ctx, whitelist); err != nil {
+					if ctx.Err() != nil || errors.Is(err, proxynode.ErrShutdown) {
+						continue
+					}
+					log.Error("error updating egress whitelist", zap.Error(err))
+				}
+
+			case <-connectedCh:
+				if connected {
+					continue
+				}
+
+				connected = true
+				lastErr = nil
+				reconnects.Reset()
+				log.Info("connected to server", zap.String("endpoint", currentConfig.Endpoint))
+
+			case err := <-waitErrCh:
+				if connectedSeen.Load() && !connected {
+					connected = true
+					reconnects.Reset()
+				}
+
+				if err == nil || errors.Is(err, proxynode.ErrShutdown) {
+					break loop
+				}
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+
+				lastErr = err
+				attempt := reconnects.Next()
+				phase := "startup"
+				if connected {
+					phase = "session"
+				}
+
+				log.Error("app error",
+					zap.String("reason", classifyReconnectError(err)),
+					zap.String("phase", phase),
+					zap.Int("retry_attempt", attempt.Number),
+					zap.Duration("retry_delay", attempt.Delay),
+					zap.Error(err),
+				)
+
+				timer := time.NewTimer(attempt.Delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return ctx.Err()
+
+				case <-shutdownChan:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					break loop
+
+				case <-timer.C:
+				}
+
+				continue loop
+			}
 		}
 	}
 
