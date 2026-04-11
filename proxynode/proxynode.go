@@ -28,6 +28,10 @@ type Params struct {
 }
 
 var ErrShutdown = errors.New("shutdown")
+var ErrDialFailed = errors.New("websocket dial failed")
+var ErrYamuxServerFailed = errors.New("yamux server creation failed")
+var ErrServerDisconnect = errors.New("server initiated disconnect")
+var ErrAcceptStreamFailed = errors.New("accept stream failed")
 
 type Proxynode struct {
 	params Params
@@ -43,6 +47,7 @@ type Proxynode struct {
 	grpcClient pbhub.ServiceClient
 
 	Handler         func(conn *yamux.Stream)
+	OnConnected     func()
 	OnServerMessage func(string)
 }
 
@@ -50,12 +55,11 @@ func New(ctx context.Context, params Params) *Proxynode {
 	app := &Proxynode{
 		params: params,
 
-		shutdown:   false,
 		shutdownCh: make(chan struct{}),
-
-		runDoneCh: make(chan struct{}),
+		runDoneCh:  make(chan struct{}),
 
 		Handler:         func(conn *yamux.Stream) {},
+		OnConnected:     func() {},
 		OnServerMessage: func(string) {},
 	}
 
@@ -68,7 +72,6 @@ func (a *Proxynode) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-
 	case <-a.runDoneCh:
 		return a.shutdownErr
 	}
@@ -80,12 +83,12 @@ func (a *Proxynode) Close() error {
 
 func (a *Proxynode) CloseWithError(err error) error {
 	a.shutdownMu.Lock()
-	defer a.shutdownMu.Unlock()
-
 	if a.shutdown {
+		a.shutdownMu.Unlock()
 		return nil
 	}
 	a.shutdown = true
+	a.shutdownMu.Unlock()
 
 	a.shutdownErrMu.Lock()
 	if a.shutdownErr == nil {
@@ -130,25 +133,27 @@ func (a *Proxynode) run(ctx context.Context) {
 		_ = resp.Body.Close()
 	}
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("websocket dial failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrDialFailed, err))
 		return
 	}
 
-	log.Info("connected to server")
-
-	wsstream := wsstream.New(conn)
+	wsConn := wsstream.New(conn)
 	yamuxConfig := yamux.DefaultConfig()
 	logging.ConfigureYamuxLogger(yamuxConfig, log)
-	session, err := yamux.Server(wsstream, yamuxConfig)
+	session, err := yamux.Server(wsConn, yamuxConfig)
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("yamux server creation failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrYamuxServerFailed, err))
 		_ = conn.Close()
 		return
 	}
+	a.OnConnected()
 
 	control1, err := session.AcceptStreamWithContext(ctx)
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("accept control stream failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrAcceptStreamFailed, err))
 		_ = conn.Close()
 		return
 	}
@@ -158,7 +163,8 @@ func (a *Proxynode) run(ctx context.Context) {
 
 	control2, err := session.AcceptStreamWithContext(ctx)
 	if err != nil {
-		a.exitErr(err)
+		log.Warn("accept control stream failed", zap.Error(err))
+		a.exitErr(fmt.Errorf("%w: %w", ErrAcceptStreamFailed, err))
 		_ = conn.Close()
 		return
 	}
@@ -178,26 +184,23 @@ func (a *Proxynode) run(ctx context.Context) {
 	}()
 
 	grpcServer := grpc.NewServer()
-
-	handler := &HandlerGRPC{
-		proxy: a,
-	}
-	pbnode.RegisterServiceServer(grpcServer, handler)
-
-	if err := util.GrpcServeOnConn(grpcServer, control2); err != nil {
-		a.exitErr(fmt.Errorf("serving gRPC on connection failed: %w", err))
-		_ = conn.Close()
-		return
-	}
-
 	defer func() {
 		log.Debug("closing gRPC server")
 		grpcServer.Stop()
 	}()
 
-	phc := pbhub.NewServiceClient(grpcClient)
-	a.grpcClient = phc
-	chr, err := phc.Hello(ctx, &pbhub.HelloRequest{
+	handler := &HandlerGRPC{proxy: a}
+	pbnode.RegisterServiceServer(grpcServer, handler)
+
+	if err := util.GrpcServeOnConn(grpcServer, control2); err != nil {
+		a.exitErr(fmt.Errorf("serving gRPC on control stream failed: %w", err))
+		_ = conn.Close()
+		return
+	}
+
+	a.grpcClient = pbhub.NewServiceClient(grpcClient)
+
+	chr, err := a.grpcClient.Hello(ctx, &pbhub.HelloRequest{
 		EgressWhitelist: &pb.EgressWhitelist{
 			Item: a.params.EgressWhitelist,
 		},
@@ -211,9 +214,8 @@ func (a *Proxynode) run(ctx context.Context) {
 	log.Info("received client hello response", zap.Any("response", chr))
 
 	var wg sync.WaitGroup
-
-	acceptContext, cancel := context.WithCancel(ctx)
-	defer cancel()
+	acceptCtx, cancelAccept := context.WithCancel(ctx)
+	defer cancelAccept()
 
 	go func() {
 		select {
@@ -222,25 +224,32 @@ func (a *Proxynode) run(ctx context.Context) {
 			return
 		case <-a.shutdownCh:
 		}
+
 		log.Debug("sending go away to session")
 		_ = session.GoAway()
-		cancel()
+		cancelAccept()
 	}()
 
 	for {
-		c, err := session.AcceptStreamWithContext(acceptContext)
+		c, err := session.AcceptStreamWithContext(acceptCtx)
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				a.exitErr(err)
+			switch {
+			case errors.Is(err, context.Canceled):
+				log.Debug("accept stream stopped", zap.Error(err))
+			case a.isShutdown():
+				log.Debug("accept stream stopped during shutdown", zap.Error(err))
+			default:
+				log.Warn("accept stream failed", zap.Error(err))
+				a.exitErr(fmt.Errorf("%w: %w", ErrAcceptStreamFailed, err))
 			}
 			break
 		}
 
 		wg.Add(1)
-		go func() {
+		go func(conn *yamux.Stream) {
 			defer wg.Done()
-			a.Handler(c)
-		}()
+			a.Handler(conn)
+		}(c)
 	}
 
 	log.Debug("not accepting new streams, waiting for existing handlers to finish")
@@ -253,23 +262,23 @@ func (a *Proxynode) run(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		log.Debug("context done, exiting run loop")
-
 	case <-wgDoneCh:
-		log.Debug("all handlers finished, closing session")
+		log.Debug("all handlers finished")
 	}
 
-	go func() {
-		if err := session.Close(); err != nil {
-			a.exitErr(err)
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-
-	case <-session.CloseChan():
-		log.Debug("session closed, exiting run loop")
+	log.Debug("session close start")
+	if err := session.Close(); err != nil {
+		log.Debug("session close failed", zap.Error(err))
+		a.exitErr(err)
+	} else {
+		log.Debug("session close completed")
 	}
+}
+
+func (a *Proxynode) isShutdown() bool {
+	a.shutdownMu.Lock()
+	defer a.shutdownMu.Unlock()
+	return a.shutdown
 }
 
 func (a *Proxynode) exitErr(err error) {
@@ -278,6 +287,7 @@ func (a *Proxynode) exitErr(err error) {
 		a.shutdownErr = err
 	}
 	a.shutdownErrMu.Unlock()
+
 	go func() {
 		_ = a.Close()
 	}()
