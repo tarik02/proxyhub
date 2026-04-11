@@ -195,12 +195,6 @@ loop:
 	}
 }
 
-func (p *Proxy) isShutdown() bool {
-	p.shutdownMu.Lock()
-	defer p.shutdownMu.Unlock()
-	return p.shutdown
-}
-
 func (p *Proxy) exitErr(err error) {
 	p.shutdownErrMu.Lock()
 	if p.shutdownErr == nil {

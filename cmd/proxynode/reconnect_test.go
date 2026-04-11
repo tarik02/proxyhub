@@ -1,15 +1,29 @@
 package main
 
 import (
-	"math/rand"
 	"testing"
 	"time"
 )
 
+type fixedJitterSource struct {
+	values []float64
+	index  int
+}
+
+func (f *fixedJitterSource) Float64() float64 {
+	if len(f.values) == 0 {
+		return 0.5
+	}
+
+	value := f.values[f.index%len(f.values)]
+	f.index++
+	return value
+}
+
 func TestReconnectPolicyFirstFailureUsesInitialDelay(t *testing.T) {
 	t.Parallel()
 
-	policy := newReconnectPolicy(rand.New(rand.NewSource(1)))
+	policy := newReconnectPolicy(&fixedJitterSource{values: []float64{0.5}})
 	attempt := policy.Next()
 
 	if attempt.Number != 1 {
@@ -18,18 +32,15 @@ func TestReconnectPolicyFirstFailureUsesInitialDelay(t *testing.T) {
 	if attempt.BaseDelay != reconnectInitialDelay {
 		t.Fatalf("expected first base delay to be %s, got %s", reconnectInitialDelay, attempt.BaseDelay)
 	}
-
-	minDelay := time.Duration(float64(reconnectInitialDelay) * (1 - reconnectJitterRatio))
-	maxDelay := time.Duration(float64(reconnectInitialDelay) * (1 + reconnectJitterRatio))
-	if attempt.Delay < minDelay || attempt.Delay > maxDelay {
-		t.Fatalf("expected jittered delay between %s and %s, got %s", minDelay, maxDelay, attempt.Delay)
+	if attempt.Delay != reconnectInitialDelay {
+		t.Fatalf("expected zero-jitter delay %s, got %s", reconnectInitialDelay, attempt.Delay)
 	}
 }
 
 func TestReconnectPolicyBacksOffAndCaps(t *testing.T) {
 	t.Parallel()
 
-	policy := newReconnectPolicy(rand.New(rand.NewSource(2)))
+	policy := newReconnectPolicy(&fixedJitterSource{values: []float64{0.5}})
 	expected := []time.Duration{
 		1 * time.Second,
 		2 * time.Second,
@@ -51,7 +62,7 @@ func TestReconnectPolicyBacksOffAndCaps(t *testing.T) {
 func TestReconnectPolicyJitterStaysWithinBand(t *testing.T) {
 	t.Parallel()
 
-	policy := newReconnectPolicy(rand.New(rand.NewSource(3)))
+	policy := newReconnectPolicy(&fixedJitterSource{values: []float64{0, 1, 0.25, 0.75}})
 
 	for i := 0; i < 8; i++ {
 		attempt := policy.Next()
@@ -67,7 +78,7 @@ func TestReconnectPolicyJitterStaysWithinBand(t *testing.T) {
 func TestReconnectPolicyResetRestartsBackoff(t *testing.T) {
 	t.Parallel()
 
-	policy := newReconnectPolicy(rand.New(rand.NewSource(4)))
+	policy := newReconnectPolicy(&fixedJitterSource{values: []float64{0.5}})
 	_ = policy.Next()
 	_ = policy.Next()
 	policy.Reset()

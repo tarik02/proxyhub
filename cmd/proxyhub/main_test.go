@@ -9,7 +9,7 @@ import (
 )
 
 func TestLeaks(t *testing.T) {
-	ln, err := net.Listen("tcp", "0.0.0.0:8080")
+	ln, err := net.Listen("tcp", "127.0.0.1:8080")
 	if err != nil {
 		t.Skipf("skipping leak test because :8080 is unavailable: %v", err)
 	}

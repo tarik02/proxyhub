@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -173,7 +172,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	log.Info("application running")
 
-	reconnects := newReconnectPolicy(rand.New(rand.NewSource(time.Now().UnixNano())))
+	reconnects := newReconnectPolicy(nil)
 	var lastErr error
 
 loop:

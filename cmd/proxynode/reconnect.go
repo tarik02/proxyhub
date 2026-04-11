@@ -1,8 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
-	"math/rand"
 	"time"
 
 	"github.com/tarik02/proxyhub/proxynode"
@@ -20,19 +21,23 @@ type reconnectAttempt struct {
 	Delay     time.Duration
 }
 
+type jitterSource interface {
+	Float64() float64
+}
+
 type reconnectPolicy struct {
-	rng      *rand.Rand
+	jitter   jitterSource
 	failures int
 	nextBase time.Duration
 }
 
-func newReconnectPolicy(rng *rand.Rand) *reconnectPolicy {
-	if rng == nil {
-		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+func newReconnectPolicy(jitter jitterSource) *reconnectPolicy {
+	if jitter == nil {
+		jitter = cryptoJitterSource{}
 	}
 
 	return &reconnectPolicy{
-		rng:      rng,
+		jitter:   jitter,
 		nextBase: reconnectInitialDelay,
 	}
 }
@@ -41,8 +46,8 @@ func (p *reconnectPolicy) Next() reconnectAttempt {
 	baseDelay := p.nextBase
 	p.failures++
 
-	jitter := (p.rng.Float64()*2 - 1) * reconnectJitterRatio
-	delay := time.Duration(float64(baseDelay) * (1 + jitter))
+	jitterFactor := (p.jitter.Float64()*2 - 1) * reconnectJitterRatio
+	delay := time.Duration(float64(baseDelay) * (1 + jitterFactor))
 
 	nextBase := p.nextBase * 2
 	if nextBase > reconnectMaxDelay {
@@ -60,6 +65,18 @@ func (p *reconnectPolicy) Next() reconnectAttempt {
 func (p *reconnectPolicy) Reset() {
 	p.failures = 0
 	p.nextBase = reconnectInitialDelay
+}
+
+type cryptoJitterSource struct{}
+
+func (cryptoJitterSource) Float64() float64 {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		now := time.Now().UnixNano()
+		return float64(uint64(now%1_000_000)) / 1_000_000
+	}
+
+	return float64(binary.BigEndian.Uint64(buf[:])) / float64(^uint64(0))
 }
 
 func classifyReconnectError(err error) string {

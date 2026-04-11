@@ -246,14 +246,16 @@ func (p *Proxyhub) handleProxy(req *http.Request, c *goproxy.ProxyCtx) (*http.Re
 	}
 
 	c.RoundTripper = goproxy.RoundTripperFunc(func(req *http.Request, c *goproxy.ProxyCtx) (*http.Response, error) {
-		client := http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return proxy.DialContext(ctx, network, addr)
-				},
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return proxy.DialContext(ctx, network, addr)
 			},
 		}
-		return client.Do(req)
+
+		outReq := req.Clone(req.Context())
+		outReq.RequestURI = ""
+
+		return transport.RoundTrip(outReq)
 	})
 
 	c.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
