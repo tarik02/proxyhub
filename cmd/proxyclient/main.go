@@ -197,6 +197,15 @@ var proxyCmd = &cobra.Command{
 				log.Error("failed to close listener", zap.Error(err))
 			}
 		}()
+		go func() {
+			<-proxyDialer.CloseChan()
+			if err := proxyDialer.Err(); err != nil && !errors.Is(err, proxyclient.ErrShutdown) && !errors.Is(err, context.Canceled) {
+				log.Error("shared transport closed", zap.Error(err))
+			}
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Error("failed to close listener after transport shutdown", zap.Error(err))
+			}
+		}()
 
 		for {
 			conn, err := listener.Accept()
@@ -213,6 +222,10 @@ var proxyCmd = &cobra.Command{
 					log.Warn("socks5 server error", zap.Error(err))
 				}
 			}()
+		}
+
+		if err := proxyDialer.Err(); err != nil && !errors.Is(err, proxyclient.ErrShutdown) && !errors.Is(err, context.Canceled) {
+			return err
 		}
 
 		return nil

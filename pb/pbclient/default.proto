@@ -1,0 +1,38 @@
+syntax = "proto3";
+package pb.pbclient;
+
+option go_package = "github.com/tarik02/proxyhub/pb/pbclient";
+
+import "pb/default.proto";
+
+message WatchProxiesRequest {
+}
+
+message ProxyEventInit {
+    repeated pb.Proxy proxy = 1;
+}
+
+message ProxyEventAdd {
+    pb.Proxy proxy = 1;
+}
+
+message ProxyEventUpdate {
+    pb.Proxy proxy = 1;
+}
+
+message ProxyEventDel {
+    string id = 1;
+}
+
+message ProxyEvent {
+    oneof event {
+        ProxyEventInit init = 1;
+        ProxyEventAdd add = 2;
+        ProxyEventUpdate update = 3;
+        ProxyEventDel del = 4;
+    }
+}
+
+service Service {
+    rpc WatchProxies (WatchProxiesRequest) returns (stream ProxyEvent);
+}

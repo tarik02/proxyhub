@@ -18,14 +18,41 @@ import (
 
 type TunnelParams struct {
 	proxyclient.ClientOptions
-	ProxyID string
+	Transport *proxyclient.Transport
+	ProxyID   string
 }
 
 type Tunnel struct {
-	session *yamux.Session
+	proxyID string
+
+	transport    *proxyclient.Transport
+	ownTransport bool
+
+	legacySession *yamux.Session
 }
 
 func New(ctx context.Context, params TunnelParams) (*Tunnel, error) {
+	transport := params.Transport
+	ownTransport := false
+	var err error
+	if transport == nil {
+		transport, err = proxyclient.NewTransport(ctx, params.ClientOptions)
+		if err != nil {
+			return nil, err
+		}
+		ownTransport = true
+	}
+
+	return &Tunnel{
+		proxyID:       params.ProxyID,
+		transport:     transport,
+		ownTransport:  ownTransport,
+		legacySession: nil,
+	}, nil
+}
+
+// NewLegacyWSTunnel keeps the previous per-proxy WebSocket tunnel transport.
+func NewLegacyWSTunnel(ctx context.Context, params TunnelParams) (*Tunnel, error) {
 	log := logging.FromContext(ctx)
 
 	dialer := params.WSDialer
@@ -53,18 +80,34 @@ func New(ctx context.Context, params TunnelParams) (*Tunnel, error) {
 		return nil, fmt.Errorf("failed to create yamux session: %w", err)
 	}
 
-	res := &Tunnel{
-		session: session,
-	}
-	return res, nil
+	return &Tunnel{
+		proxyID:       params.ProxyID,
+		legacySession: session,
+	}, nil
 }
 
 func (p *Tunnel) Close() error {
-	return p.session.Close()
+	if p.transport != nil && p.ownTransport {
+		return p.transport.Close()
+	}
+	if p.legacySession != nil {
+		return p.legacySession.Close()
+	}
+	return nil
 }
 
 func (p *Tunnel) CloseChan() <-chan struct{} {
-	return p.session.CloseChan()
+	if p.transport != nil {
+		return p.transport.CloseChan()
+	}
+	return p.legacySession.CloseChan()
+}
+
+func (p *Tunnel) Err() error {
+	if p.transport != nil {
+		return p.transport.Err()
+	}
+	return nil
 }
 
 func (p *Tunnel) Dial(network, address string) (net.Conn, error) {
@@ -73,7 +116,10 @@ func (p *Tunnel) Dial(network, address string) (net.Conn, error) {
 
 func (p *Tunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if network == "" && address == "" {
-		return p.session.OpenStream()
+		if p.transport != nil {
+			return p.transport.OpenProxyStream(ctx, p.proxyID)
+		}
+		return p.legacySession.OpenStream()
 	}
 
 	s, err := proxy.SOCKS5("", "", nil, p)
