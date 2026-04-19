@@ -6,3 +6,11 @@ option go_package = "github.com/tarik02/proxyhub/pb";
 message EgressWhitelist {
     repeated string item = 1;
 }
+
+message Proxy {
+    string id = 1;
+    string version = 2;
+    int32 port = 3;
+    int64 started = 4;
+    EgressWhitelist egressWhitelist = 5;
+}

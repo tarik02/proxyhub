@@ -2,31 +2,23 @@ package proxycatalog
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
+	"io"
 	"sync"
 	"time"
 
-	"github.com/tarik02/proxyhub/entevents"
+	"github.com/tarik02/proxyhub/api"
 	"github.com/tarik02/proxyhub/logging"
+	"github.com/tarik02/proxyhub/pb/pbclient"
 	"github.com/tarik02/proxyhub/proxyclient"
-	"github.com/tmaxmax/go-sse"
 	"go.uber.org/zap"
 )
 
 var ErrShutdown = errors.New("shutdown")
-var ErrUnauthorized = errors.New("unauthorized")
-var ErrNotFound = errors.New("not found")
+var ErrUnauthorized = proxyclient.ErrUnauthorized
+var ErrNotFound = proxyclient.ErrNotFound
 
-type UnexpectedStatusError struct {
-	StatusCode int
-}
-
-func (e *UnexpectedStatusError) Error() string {
-	return fmt.Sprintf("unexpected status code: %d", e.StatusCode)
-}
+type UnexpectedStatusError = proxyclient.UnexpectedStatusError
 
 type Client struct {
 	shutdown      bool
@@ -41,6 +33,8 @@ type Client struct {
 
 	eventsCh        chan any
 	eventsCloseOnce sync.Once
+
+	connectAndProcess func(context.Context) error
 }
 
 func NewClient(ctx context.Context, opts proxyclient.ClientOptions) *Client {
@@ -53,8 +47,31 @@ func NewClient(ctx context.Context, opts proxyclient.ClientOptions) *Client {
 
 		eventsCh: make(chan any, 128),
 	}
+	c.connectAndProcess = func(ctx context.Context) error {
+		return c.connectAndProcessTransport(ctx, opts)
+	}
 
-	go c.run(ctx, opts)
+	go c.run(ctx)
+
+	return c
+}
+
+// NewLegacySSEClient keeps the previous SSE-backed proxy catalog transport.
+func NewLegacySSEClient(ctx context.Context, opts proxyclient.ClientOptions) *Client {
+	c := &Client{
+		shutdown:   false,
+		shutdownCh: make(chan struct{}),
+
+		readyCh:   make(chan struct{}),
+		runDoneCh: make(chan struct{}),
+
+		eventsCh: make(chan any, 128),
+	}
+	c.connectAndProcess = func(ctx context.Context) error {
+		return c.connectAndProcessLegacySSE(ctx, opts)
+	}
+
+	go c.run(ctx)
 
 	return c
 }
@@ -119,7 +136,7 @@ func (c *Client) exitErr(err error) {
 	}()
 }
 
-func (c *Client) run(ctx context.Context, opts proxyclient.ClientOptions) {
+func (c *Client) run(ctx context.Context) {
 	defer close(c.runDoneCh)
 
 	defer func() {
@@ -132,7 +149,7 @@ func (c *Client) run(ctx context.Context, opts proxyclient.ClientOptions) {
 	defer t.Stop()
 
 	for {
-		err := c.connectAndProcess(ctx, opts)
+		err := c.connectAndProcess(ctx)
 		c.eventsCh <- EventDisconnected{Err: err}
 
 		select {
@@ -147,66 +164,60 @@ func (c *Client) run(ctx context.Context, opts proxyclient.ClientOptions) {
 	}
 }
 
-func (c *Client) connectAndProcess(ctx context.Context, opts proxyclient.ClientOptions) error {
+func (c *Client) connectAndProcessTransport(ctx context.Context, opts proxyclient.ClientOptions) error {
 	log := logging.FromContext(ctx)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/proxies/live", opts.Endpoint), nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", opts.Token))
-
-	res, err := opts.HTTP.Do(req) // nolint:bodyclose
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-
-	switch res.StatusCode {
-	case http.StatusUnauthorized:
-		c.exitErr(ErrUnauthorized)
-		return nil
-
-	case http.StatusNotFound:
-		c.exitErr(ErrNotFound)
-		return nil
-
-	case http.StatusOK:
-		break
-
-	default:
-		return &UnexpectedStatusError{StatusCode: res.StatusCode}
-	}
 
 	doneCh := make(chan struct{})
 	defer close(doneCh)
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	go func() {
 		select {
 		case <-c.shutdownCh:
+			cancel()
 		case <-doneCh:
 		}
-
-		_ = res.Body.Close()
 	}()
 
-	for ev, err := range sse.Read(res.Body, nil) {
+	transport, err := proxyclient.NewTransport(connCtx, opts)
+	if err != nil {
+		switch {
+		case errors.Is(err, proxyclient.ErrUnauthorized):
+			c.exitErr(ErrUnauthorized)
+			return nil
+		case errors.Is(err, proxyclient.ErrNotFound):
+			c.exitErr(ErrNotFound)
+			return nil
+		default:
+			return err
+		}
+	}
+	defer func() {
+		_ = transport.Close()
+	}()
+
+	stream, err := transport.WatchProxies(connCtx)
+	if err != nil {
+		return err
+	}
+
+	for {
+		ev, err := stream.Recv()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return err
+			}
 			return err
 		}
 
-		log.Debug("received event from proxy server",
-			zap.String("event_id", ev.LastEventID),
-			zap.String("event_type", ev.Type),
-			zap.String("data", ev.Data),
-		)
+		log.Debug("received event from proxy server", zap.String("type", proxyEventType(ev)))
 
-		switch ev.Type {
-		case entevents.EventTypeInit:
-			data := EventInit{}
-			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
-				return err
+		switch event := ev.Event.(type) {
+		case *pbclient.ProxyEvent_Init:
+			data := EventInit(make([]api.Proxy, 0, len(event.Init.Proxy)))
+			for _, item := range event.Init.Proxy {
+				data = append(data, api.ProxyFromPB(item))
 			}
 
 			c.readyOnce.Do(func() {
@@ -215,31 +226,29 @@ func (c *Client) connectAndProcess(ctx context.Context, opts proxyclient.ClientO
 
 			c.eventsCh <- data
 
-		case entevents.EventTypeAdd:
-			data := EventProxyAdd{}
-			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
-				return err
-			}
+		case *pbclient.ProxyEvent_Add:
+			c.eventsCh <- EventProxyAdd{Proxy: api.ProxyFromPB(event.Add.Proxy)}
 
-			c.eventsCh <- data
+		case *pbclient.ProxyEvent_Update:
+			c.eventsCh <- EventProxyUpdate{Proxy: api.ProxyFromPB(event.Update.Proxy)}
 
-		case "update":
-			data := EventProxyUpdate{}
-			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
-				return err
-			}
-
-			c.eventsCh <- data
-
-		case entevents.EventTypeDel:
-			var data string
-			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
-				return err
-			}
-
-			c.eventsCh <- EventProxyDel(data)
+		case *pbclient.ProxyEvent_Del:
+			c.eventsCh <- EventProxyDel(event.Del.Id)
 		}
 	}
+}
 
-	return nil
+func proxyEventType(ev *pbclient.ProxyEvent) string {
+	switch ev.Event.(type) {
+	case *pbclient.ProxyEvent_Init:
+		return "init"
+	case *pbclient.ProxyEvent_Add:
+		return "add"
+	case *pbclient.ProxyEvent_Update:
+		return "update"
+	case *pbclient.ProxyEvent_Del:
+		return "del"
+	default:
+		return "unknown"
+	}
 }

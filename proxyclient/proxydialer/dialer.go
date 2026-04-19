@@ -18,6 +18,14 @@ type Dialer struct {
 	ID      string
 }
 
+// NewLegacyDialer keeps the previous /socks/:id legacy WebSocket transport.
+func NewLegacyDialer(options proxyclient.ClientOptions, id string) *Dialer {
+	return &Dialer{
+		Options: options,
+		ID:      id,
+	}
+}
+
 func (p *Dialer) Dial(network, address string) (net.Conn, error) {
 	return p.DialContext(context.Background(), network, address)
 }

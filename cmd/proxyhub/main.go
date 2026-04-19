@@ -122,6 +122,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	hub := proxyhub.New(ctx)
 	hub.ValidateAPIToken = config.FindAPIToken
+	clientTransportHandler := proxyhub.NewClientTransportHandler(hub, proxyEvents)
 
 	hub.OnProxyAdded = func(p *proxyhub.Proxy) {
 		go func() {
@@ -302,6 +303,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	r.GET("/socks/:id", tokenAuth, func(c *gin.Context) {
 		id := c.Param("id")
+		log.Debug("accepted legacy socks transport connection", zap.String("id", id))
 
 		proxy := hub.GetProxyByID(id)
 		if proxy == nil {
@@ -328,6 +330,7 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 
 	r.GET("/proxy/:id/tunnel", tokenAuth, func(c *gin.Context) {
 		id := c.Param("id")
+		log.Debug("accepted legacy tunnel transport connection", zap.String("id", id))
 
 		proxy := hub.GetProxyByID(id)
 		if proxy == nil {
@@ -376,8 +379,52 @@ func run(ctx context.Context, rootLog **zap.Logger) error {
 		}
 	})
 
+	r.GET("/api/client/transport", tokenAuth, func(c *gin.Context) {
+		log.Debug("accepted shared client transport connection")
+
+		var upgrader = websocket.Upgrader{}
+
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			log.Warn("upgrade failed", zap.Error(err))
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		ws := wsstream.New(conn)
+		yamuxConfig := yamux.DefaultConfig()
+		logging.ConfigureYamuxLogger(yamuxConfig, log)
+		session, err := yamux.Client(ws, yamuxConfig)
+		if err != nil {
+			log.Warn("yamux client failed", zap.Error(err))
+			return
+		}
+
+		sessionCtx, sessionCancel := context.WithCancel(ctx)
+		defer sessionCancel()
+
+		go func() {
+			select {
+			case <-shutdownChan:
+			case <-ctx.Done():
+			case <-session.CloseChan():
+			}
+			sessionCancel()
+		}()
+
+		if err := clientTransportHandler.HandleSession(sessionCtx, session); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("client transport session failed", zap.Error(err))
+		}
+	})
+
+	// Legacy HTTP snapshot and SSE transport for older clients.
 	r.GET("/api/proxies", tokenAuth, proxyEvents.ServeSnapshot)
-	r.GET("/api/proxies/live", tokenAuth, proxyEvents.ServeSSE)
+	r.GET("/api/proxies/live", tokenAuth, func(c *gin.Context) {
+		log.Debug("accepted legacy SSE proxy catalog stream")
+		proxyEvents.ServeSSE(c)
+	})
 
 	if config.Profiling.Enabled {
 		g := r.Group("", bearertoken.MiddlewareWithStaticToken(config.Profiling.Token))

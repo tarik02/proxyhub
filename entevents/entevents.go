@@ -135,7 +135,8 @@ func (e *Manager[T]) queueEvent(ctx context.Context, event EntityEvent[T]) error
 func (e *Manager[T]) run(ctx context.Context) {
 	defer close(e.runDoneCh)
 
-	t := time.Tick(30 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
 loop:
 	for {
@@ -154,25 +155,21 @@ loop:
 				res[i] = v
 				i++
 			}
-			client <- EntityEvent[T]{Type: EventTypeInit, Payload: res}
+			e.sendClientEvent(client, EntityEvent[T]{Type: EventTypeInit, Payload: res})
 
 		case client := <-e.closedClients:
-			delete(e.totalClients, client)
-			close(client)
+			e.removeClient(client)
 
 		case eventMsg := <-e.events:
 			e.processEvent(eventMsg)
 
-		case <-t:
-			for client := range e.totalClients {
-				client <- EntityEvent[T]{Type: EventTypePing, Payload: "null"}
-			}
+		case <-ticker.C:
+			e.broadcast(EntityEvent[T]{Type: EventTypePing, Payload: "null"})
 		}
 	}
 
 	for client := range e.totalClients {
-		client <- EntityEvent[T]{Type: EventTypeShutdown, Payload: "null"}
-		close(client)
+		e.removeClient(client, EntityEvent[T]{Type: EventTypeShutdown, Payload: "null"})
 	}
 	e.totalClients = nil
 }
@@ -201,50 +198,107 @@ func (e *Manager[T]) processEvent(event EntityEvent[T]) {
 		e.snapshot[event.ID] = event.Entity
 	}
 
-	for clientMessageChan := range e.totalClients {
-		clientMessageChan <- event
+	e.broadcast(event)
+}
+
+func (e *Manager[T]) broadcast(event EntityEvent[T]) {
+	for client := range e.totalClients {
+		e.sendClientEvent(client, event)
 	}
 }
 
-func (e *Manager[T]) ServeSnapshot(c *gin.Context) {
-	clientChan := make(ClientChan[T], 32)
+func (e *Manager[T]) sendClientEvent(client ClientChan[T], event EntityEvent[T]) {
+	select {
+	case client <- event:
+	default:
+		e.removeClient(client)
+	}
+}
+
+func (e *Manager[T]) removeClient(client ClientChan[T], finalEvent ...EntityEvent[T]) {
+	if _, ok := e.totalClients[client]; !ok {
+		return
+	}
+
+	delete(e.totalClients, client)
+
+	if len(finalEvent) > 0 {
+		select {
+		case client <- finalEvent[0]:
+		default:
+		}
+	}
+
+	close(client)
+}
+
+func (e *Manager[T]) Subscribe(ctx context.Context, buffer int) (<-chan EntityEvent[T], func(), error) {
+	clientChan := make(ClientChan[T], buffer)
 
 	select {
-	case <-c.Request.Context().Done():
-		c.Abort()
-		return
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
 
 	case <-e.shutdownCh:
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
-		return
+		return nil, nil, e.shutdownErr
 
 	case e.newClients <- clientChan:
 	}
 
-	var snapshot EntityEvent[T]
-	select {
-	case <-c.Request.Context().Done():
-		c.Abort()
-		return
-
-	case <-e.shutdownCh:
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
-		return
-
-	case snapshot = <-clientChan:
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			go func() {
+				select {
+				case <-e.shutdownCh:
+				case e.closedClients <- clientChan:
+				}
+			}()
+		})
 	}
 
 	go func() {
 		select {
+		case <-ctx.Done():
+			unsubscribe()
 		case <-e.shutdownCh:
-		case e.closedClients <- clientChan:
 		}
 	}()
 
-	go func() {
-		for range clientChan {
+	return clientChan, unsubscribe, nil
+}
+
+func (e *Manager[T]) ServeSnapshot(c *gin.Context) {
+	clientChan, unsubscribe, err := e.Subscribe(c.Request.Context(), 32)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			c.Abort()
+			return
 		}
-	}()
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+		return
+	}
+
+	var snapshot EntityEvent[T]
+	var ok bool
+	select {
+	case <-c.Request.Context().Done():
+		unsubscribe()
+		c.Abort()
+		return
+
+	case <-e.shutdownCh:
+		unsubscribe()
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+		return
+
+	case snapshot, ok = <-clientChan:
+	}
+	unsubscribe()
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+		return
+	}
 
 	c.JSON(http.StatusOK, snapshot.Payload)
 }
@@ -255,32 +309,16 @@ func (e *Manager[T]) ServeSSE(c *gin.Context) {
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
 
-	clientChan := make(ClientChan[T], 32)
-
-	select {
-	case <-c.Request.Context().Done():
-		c.Abort()
-		return
-
-	case <-e.shutdownCh:
+	clientChan, unsubscribe, err := e.Subscribe(c.Request.Context(), 32)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			c.Abort()
+			return
+		}
 		c.Status(http.StatusServiceUnavailable)
 		return
-
-	case e.newClients <- clientChan:
 	}
-
-	defer func() {
-		// Drain client channel so that it does not block. Server may keep sending messages to this channel
-		go func() {
-			for range clientChan {
-			}
-		}()
-
-		select {
-		case <-e.shutdownCh:
-		case e.closedClients <- clientChan:
-		}
-	}()
+	defer unsubscribe()
 
 	c.Stream(func(w io.Writer) bool {
 		if msg, ok := <-clientChan; ok {
