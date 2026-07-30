@@ -12,4 +12,4 @@ plugins:
         echo "${nextRelease.notes}" > /tmp/release-notes.md
         goreleaser release --release-notes /tmp/release-notes.md --clean
 
-repositoryUrl: https://github.com/tarik02/proxyhub
+repositoryUrl: https://github.com/tarik02-org/proxyhub
