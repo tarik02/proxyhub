@@ -120,7 +120,7 @@ kos:
     base_image: mirror.gcr.io/library/alpine:3.21.2
     build: proxyhub
     repositories:
-      - ghcr.io/tarik02/proxyhub/proxyhub
+      - ghcr.io/tarik02-org/proxyhub/proxyhub
     tags:
       - '{{ .Version }}'
       - '{{ if eq .Branch "next" }}next{{end}}'
@@ -134,7 +134,7 @@ kos:
     base_image: mirror.gcr.io/library/alpine:3.21.2
     build: proxyclient
     repositories:
-      - ghcr.io/tarik02/proxyhub/proxyclient
+      - ghcr.io/tarik02-org/proxyhub/proxyclient
     tags:
       - '{{ .Version }}'
       - '{{ if eq .Branch "next" }}next{{end}}'
@@ -148,7 +148,7 @@ kos:
     base_image: mirror.gcr.io/library/alpine:3.21.2
     build: proxynode
     repositories:
-      - ghcr.io/tarik02/proxyhub/proxynode
+      - ghcr.io/tarik02-org/proxyhub/proxynode
     tags:
       - '{{ .Version }}'
       - '{{ if eq .Branch "next" }}next{{end}}'
