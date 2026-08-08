@@ -1,6 +1,6 @@
 module github.com/tarik02/proxyhub
 
-go 1.26.1
+go 1.26.5
 
 require (
 	github.com/elazarl/goproxy v1.8.3
