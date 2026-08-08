@@ -52,7 +52,7 @@ require (
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/elazarl/goproxy/ext v0.0.0-20260327201742-eeb2adb11cb5
+	github.com/elazarl/goproxy/ext v0.0.0-20260719220256-d435b12bc2fd
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/gin-contrib/pprof v1.5.4
 	github.com/gin-contrib/sse v1.1.0 // indirect

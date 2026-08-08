@@ -49,6 +49,8 @@ github.com/elazarl/goproxy/ext v0.0.0-20251122212328-fad3713f1715 h1:qL0DOadaXRA
 github.com/elazarl/goproxy/ext v0.0.0-20251122212328-fad3713f1715/go.mod h1:fx75f98CST5mRiLRu5fYLHj5hx641zC7dcN+cT88gmo=
 github.com/elazarl/goproxy/ext v0.0.0-20260327201742-eeb2adb11cb5 h1:dOKVfQBnnnqmKnYFmc6pdlUUo9YQVXljVLrLmQJed0k=
 github.com/elazarl/goproxy/ext v0.0.0-20260327201742-eeb2adb11cb5/go.mod h1:BDldqheoTMmnZfXEweTXUIoJr2lPAFsEfG+uiSF6Cac=
+github.com/elazarl/goproxy/ext v0.0.0-20260719220256-d435b12bc2fd h1:Z3fC9JbGOlZK+T/TRjI/d4ItPGKADycqmywTk3xPxBI=
+github.com/elazarl/goproxy/ext v0.0.0-20260719220256-d435b12bc2fd/go.mod h1:BDldqheoTMmnZfXEweTXUIoJr2lPAFsEfG+uiSF6Cac=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
