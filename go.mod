@@ -79,7 +79,7 @@ require (
 	github.com/vence722/gin-middleware-bearer-token v1.1.0
 	go.hein.dev/go-version v0.1.0
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.52.0
